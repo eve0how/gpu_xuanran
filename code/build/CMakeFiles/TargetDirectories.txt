@@ -1,0 +1,7 @@
+/data/PA1-2/code/build/CMakeFiles/PA1-2.dir
+/data/PA1-2/code/build/CMakeFiles/gen_textures.dir
+/data/PA1-2/code/build/CMakeFiles/edit_cache.dir
+/data/PA1-2/code/build/CMakeFiles/rebuild_cache.dir
+/data/PA1-2/code/build/deps/vecmath/CMakeFiles/vecmath.dir
+/data/PA1-2/code/build/deps/vecmath/CMakeFiles/edit_cache.dir
+/data/PA1-2/code/build/deps/vecmath/CMakeFiles/rebuild_cache.dir

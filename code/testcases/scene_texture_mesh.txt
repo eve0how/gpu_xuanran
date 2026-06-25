@@ -1,0 +1,119 @@
+
+PerspectiveCamera {
+    center 0 1 4.3
+    direction 0 0 -1
+    up 0 1 0
+    angle 36
+    width 1024
+    height 1024
+}
+
+Lights {
+    numLights 1
+    PointLight {
+        position 0 1.9 0
+        color 2 2 2
+    }
+}
+
+Background {
+    color 0 0 0
+}
+
+Materials {
+    numMaterials 11
+    Material {
+        diffuseColor 1 1 1
+        texture textures/wood_albedo.bmp
+    }
+    Material {
+        diffuseColor 0.10 0.10 0.10
+    }
+    Material {
+        diffuseColor 1 1 1
+        texture textures/stone_albedo.bmp
+    }
+    Material {
+        diffuseColor 0.180 0.280 0.800
+    }
+    Material {
+        diffuseColor 0.800 0.150 0.150
+    }
+    Material {
+        diffuseColor 0.150 0.680 0.200
+    }
+    ReflectiveMaterial {
+        reflectColor 1 1 1
+    }
+    RefractiveMaterial {
+        refractColor 1 1 1
+        refractIndex 1.45
+    }
+    Material {
+        diffuseColor 1 1 1
+        texture textures/brick_albedo.bmp
+    }
+    Material {
+        diffuseColor 0.65 0.65 0.60
+    }
+    GlossyMaterial {
+        diffuseColor 0 0 0
+        specularColor 0.9 0.7 0.3
+        roughness 0.12
+        F0 0.9 0.7 0.3
+    }
+}
+
+Group {
+    numObjects 10
+    MaterialIndex 0
+    TriangleMesh {
+        obj_file mesh/cornell_floor.obj
+    }
+    MaterialIndex 1
+    Plane {
+        normal 0 -1 0
+        offset -2
+    }
+    MaterialIndex 2
+    TriangleMesh {
+        obj_file mesh/cornell_left_wall.obj
+    }
+    MaterialIndex 8
+    TriangleMesh {
+        obj_file mesh/cornell_back_wall.obj
+    }
+    MaterialIndex 4
+    Sphere {
+        center 0.05 0.70 0.05
+        radius 0.40
+    }
+    MaterialIndex 3
+    Sphere {
+        center -0.52 1.12 -0.42
+        radius 0.33
+    }
+    MaterialIndex 5
+    Sphere {
+        center -0.55 0.42 0.58
+        radius 0.28
+    }
+    MaterialIndex 10
+    Sphere {
+        center 0.62 1.15 -0.30
+        radius 0.38
+    }
+    MaterialIndex 7
+    Sphere {
+        center 0.60 0.38 0.40
+        radius 0.26
+    }
+    MaterialIndex 9
+    Transform {
+        Translate -0.55 0.36 0.62
+        UniformScale 0.36
+        TriangleMesh {
+            obj_file mesh/cube.obj
+        }
+    }
+}

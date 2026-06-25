@@ -1,0 +1,9 @@
+Argument 1 is: testcases/scene_path.txt
+Argument 2 is: output/path_no_nee.bmp
+Argument 3 is: path
+Argument 4 is: 64
+Argument 5 is: gamma
+Argument 6 is: omp
+Render mode: path, SPP: 64, gamma: on, omp: on, dispersion: off (2 threads)
+Render time: 682.601 s
+Hello! Computer Graphics!

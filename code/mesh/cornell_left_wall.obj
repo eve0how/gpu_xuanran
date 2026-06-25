@@ -1,0 +1,11 @@
+# Left wall quad (x = -1), outward normal +X into room
+v -1 0 -1
+v -1 0  1
+v -1 2  1
+v -1 2 -1
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+f 1/1 4/4 3/3
+f 1/1 3/3 2/2

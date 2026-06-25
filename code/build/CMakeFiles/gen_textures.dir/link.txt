@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/gen_textures.dir/src/gen_textures.cpp.o CMakeFiles/gen_textures.dir/src/texture.cpp.o -o gen_textures  deps/vecmath/libvecmath.a 
