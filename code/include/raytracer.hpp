@@ -643,7 +643,9 @@ private:
                 if (misDenom < 1e-8f) {
                     return Vector3f::ZERO;
                 }
-                float scale = misCtx->pdfBrdf / misDenom;
+                float scale = misCtx->glossyMat != nullptr
+                                  ? (misCtx->pdfBrdf / misDenom)
+                                  : (1.0f / misDenom);
                 return clampRadiance(Vector3f(
                     throughput[0] * emission[0] * scale,
                     throughput[1] * emission[1] * scale,

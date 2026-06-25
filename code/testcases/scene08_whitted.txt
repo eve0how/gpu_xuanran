@@ -81,33 +81,33 @@ Group {
     }
     MaterialIndex 4
     Sphere {
-        center 0.08 0.68 0.03
-        radius 0.38
+        center 0.05 0.70 0.05
+        radius 0.40
     }
     MaterialIndex 3
     Sphere {
-        center -0.49 1.10 -0.45
-        radius 0.31
+        center -0.52 1.12 -0.42
+        radius 0.33
     }
     MaterialIndex 5
     Sphere {
-        center -0.62 0.30 0.15
+        center -0.55 0.42 0.58
         radius 0.28
     }
     MaterialIndex 6
     Sphere {
-        center 0.59 1.13 -0.33
-        radius 0.36
+        center 0.62 1.15 -0.30
+        radius 0.38
     }
     MaterialIndex 6
     Sphere {
-        center 0.63 0.40 0.37
-        radius 0.28
+        center 0.60 0.38 0.40
+        radius 0.26
     }
     MaterialIndex 7
     Transform {
-        Translate -0.48 0.36 0.70
-        UniformScale 0.34
+        Translate -0.55 0.36 0.62
+        UniformScale 0.36
         TriangleMesh {
             obj_file mesh/cube.obj
         }

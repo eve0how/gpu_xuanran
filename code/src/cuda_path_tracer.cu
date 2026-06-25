@@ -589,6 +589,7 @@ struct MisCtx {
     float3 shadingPoint;
     float3 N;
     bool active;
+    bool glossyPath;
 };
 
 __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 dir, int depth,
@@ -623,7 +624,8 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
             if (misDenom < 1e-8f) {
                 return make3(0, 0, 0);
             }
-            float scale = misCtx->pdfBrdf / misDenom;
+            // Diffuse parents apply albedo (== brdf*cos/pdf); glossy parents divide by pdfBrdf.
+            float scale = misCtx->glossyPath ? (misCtx->pdfBrdf / misDenom) : (1.0f / misDenom);
             return clampRadiance3(mul3(mul3v(throughput, emission), scale));
         }
         return clampRadiance3(mul3v(throughput, emission));
@@ -743,6 +745,7 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
                     mis.shadingPoint = hitPoint;
                     mis.N = N;
                     mis.active = true;
+                    mis.glossyPath = true;
                     misPtr = &mis;
                 }
                 float3 Li = castRayPath(scene, origin, wi, depth + 1, throughput, indirectEmissive,
@@ -782,6 +785,7 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
                 mis.shadingPoint = hitPoint;
                 mis.N = N;
                 mis.active = true;
+                mis.glossyPath = false;
                 misPtr = &mis;
             }
             float3 Li = castRayPath(scene, origin, wi, depth + 1, throughput, indirectEmissive, mode,

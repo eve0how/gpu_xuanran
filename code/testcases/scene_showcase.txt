@@ -54,6 +54,7 @@ Materials {
     RefractiveMaterial {
         refractColor 1 1 1
         refractIndex 1.45
+        dispersionDelta 0.06
     }
     EmissiveMaterial {
         emission 80 80 80
@@ -108,7 +109,7 @@ Group {
     }
     MaterialIndex 5
     Sphere {
-        center -0.62 0.30 0.15
+        center -0.55 0.42 0.58
         radius 0.28
     }
     MaterialIndex 10
@@ -123,8 +124,8 @@ Group {
     }
     MaterialIndex 7
     Transform {
-        Translate -0.48 0.36 0.70
-        UniformScale 0.34
+        Translate -0.55 0.36 0.62
+        UniformScale 0.36
         TriangleMesh {
             obj_file mesh/cube.obj
         }
