@@ -30,6 +30,7 @@ static float uniformScaleFactor(const Matrix4f &m) {
 
 class SceneFlattener {
 public:
+    // Walk the CPU scene tree once and bake world-space SOA arrays — GPU kernels can't virtual-dispatch.
     explicit SceneFlattener(const SceneParser &scene) : scene(scene) {}
 
     void flattenInto(std::vector<GpuMaterial> &outMaterials,

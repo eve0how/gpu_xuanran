@@ -27,7 +27,7 @@ constexpr int kMaxDepth = 12;
 constexpr int kRrStartDepth = 8;
 constexpr float kRrMinSurvival = 0.15f;
 constexpr float kPi = 3.14159265358979323846f;
-constexpr float kRadianceClamp = 30.0f;
+constexpr float kRadianceClamp = 100.0f;
 
 struct GpuSceneDevice {
     const GpuMaterial *materials;
@@ -405,12 +405,26 @@ __device__ float misWeightPower(float pdf, float pdfA, float pdfB) {
 
 __device__ float channelIor(float baseIor, float delta, int channel) {
     if (channel == 0) {
-        return baseIor - delta;
+        return baseIor - delta * 0.5f;
     }
     if (channel == 2) {
-        return baseIor + delta;
+        return baseIor + delta * 0.5f;
     }
     return baseIor;
+}
+
+// Keep a single wavelength per path after dispersion split (matches geo-pic style).
+__device__ float3 scaleDispAttenuation(float3 throughput, float3 attenColor, int dispChannel) {
+    if (dispChannel < 0) {
+        return mul3v(throughput, attenColor);
+    }
+    if (dispChannel == 0) {
+        return make3(throughput.x * attenColor.x, 0.0f, 0.0f);
+    }
+    if (dispChannel == 1) {
+        return make3(0.0f, throughput.y * attenColor.y, 0.0f);
+    }
+    return make3(0.0f, 0.0f, throughput.z * attenColor.z);
 }
 
 __device__ bool isSegmentOccluded(const GpuSceneDevice &scene, float3 from, float3 to, float3 N) {
@@ -668,14 +682,16 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
         float3 N = faceNormal(D, geomN);
         float3 reflected = sub3(D, mul3(N, 2.0f * dot3(D, N)));
         float3 origin = offsetAlongNormal(hitPoint, N, kOriginOffset);
-        float3 newTp = mul3v(throughput, load3(mat.specular));
+        float3 newTp = scaleDispAttenuation(throughput, load3(mat.specular), dispChannel);
         return clampRadiance3(castRayPath(scene, origin, reflected, depth + 1, newTp, true, mode,
                                           dispersionEnabled, dispChannel, nullptr, rng));
     }
 
     if (mat.type == GPU_MAT_REFRACT) {
         float3 refractColor = load3(mat.specular);
-        if (dispersionEnabled && mat.dispersionDelta > 0.0f && dispChannel < 0) {
+        bool exiting = dot3(D, geomN) > 0.0f;
+        // Exit split only (entry stays single-ray): different IOR per channel projects rainbow on screen.
+        if (dispersionEnabled && mat.dispersionDelta > 0.0f && dispChannel < 0 && exiting) {
             float rx = 0.0f;
             float gy = 0.0f;
             float bz = 0.0f;
@@ -683,14 +699,15 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
                 float ior = channelIor(mat.ior, mat.dispersionDelta, c);
                 float3 newDir = computeRefractDirection(D, geomN, ior);
                 float3 origin = offsetAlongRay(hitPoint, newDir, kRefractOriginOffset);
-                float3 child = castRayPath(scene, origin, newDir, depth + 1, throughput, true, mode,
+                float3 chTp = scaleDispAttenuation(throughput, refractColor, c);
+                float3 child = castRayPath(scene, origin, newDir, depth + 1, chTp, true, mode,
                                            dispersionEnabled, c, nullptr, rng);
                 if (c == 0) {
-                    rx = child.x * refractColor.x;
+                    rx = child.x;
                 } else if (c == 1) {
-                    gy = child.y * refractColor.y;
+                    gy = child.y;
                 } else {
-                    bz = child.z * refractColor.z;
+                    bz = child.z;
                 }
             }
             return clampRadiance3(make3(rx, gy, bz));
@@ -701,7 +718,7 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
         }
         float3 newDir = computeRefractDirection(D, geomN, ior);
         float3 origin = offsetAlongRay(hitPoint, newDir, kRefractOriginOffset);
-        float3 newTp = mul3v(throughput, refractColor);
+        float3 newTp = scaleDispAttenuation(throughput, refractColor, dispChannel);
         return clampRadiance3(castRayPath(scene, origin, newDir, depth + 1, newTp, true, mode,
                                           dispersionEnabled, dispChannel, nullptr, rng));
     }
@@ -715,7 +732,6 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
         if (useNee) {
             direct = sampleDirectEmissiveBRDF(scene, hitPoint, N, wo, mat, useMis, rng);
             direct = add3(direct, sampleDirectPointLightsGlossy(scene, hitPoint, N, wo, mat));
-            direct = clampRadiance3(direct);
         }
 
         float kdLum = luminance3(kd);
@@ -781,15 +797,15 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
                 indirect = clampRadiance3(mul3(mul3v(brdf, Li), cosO / (pdf * rrProb)));
             }
         }
-        return clampRadiance3(add3(direct, indirect));
+        return add3(direct, clampRadiance3(indirect));
     }
 
     float3 N = shadingNormal(mul3(D, -1.0f), geomN);
     float3 albedo = load3(mat.diffuse);
     float3 direct = make3(0, 0, 0);
     if (useNee) {
-        direct = clampRadiance3(add3(sampleDirectEmissive(scene, hitPoint, N, albedo, useMis, rng),
-                                     sampleDirectPointLights(scene, hitPoint, N, albedo)));
+        direct = add3(sampleDirectEmissive(scene, hitPoint, N, albedo, useMis, rng),
+                      sampleDirectPointLights(scene, hitPoint, N, albedo));
     }
 
     float pdf = 0.0f;
@@ -821,7 +837,7 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
             indirect = clampRadiance3(mul3(mul3v(albedo, Li), 1.0f / rrProb));
         }
     }
-    return clampRadiance3(add3(direct, indirect));
+    return add3(direct, clampRadiance3(indirect));
 }
 
 __device__ bool isInShadow(const GpuSceneDevice &scene, float3 p, float3 N, float3 L, float maxT);
@@ -895,7 +911,7 @@ __device__ bool isInShadow(const GpuSceneDevice &scene, float3 p, float3 N, floa
 }
 
 __device__ float3 castRayWhitted(const GpuSceneDevice &scene, float3 orig, float3 dir, int depth,
-                                 float tmin, curandState &rng) {
+                                 float tmin, bool dispersionEnabled, curandState &rng) {
     (void)rng;
     if (depth > kMaxDepth) {
         return load3(scene.camera.bg);
@@ -924,14 +940,37 @@ __device__ float3 castRayWhitted(const GpuSceneDevice &scene, float3 orig, float
         float3 N = faceNormal(D, geomN);
         float3 reflected = sub3(D, mul3(N, 2.0f * dot3(D, N)));
         float3 origin = offsetAlongNormal(hitPoint, N, kOriginOffset);
-        float3 child = castRayWhitted(scene, origin, reflected, depth + 1, kRayEps, rng);
+        float3 child = castRayWhitted(scene, origin, reflected, depth + 1, kRayEps, dispersionEnabled, rng);
         return mul3v(child, load3(mat.specular));
+    }
+
+    float3 refractColor = load3(mat.specular);
+    bool exiting = dot3(D, geomN) > 0.0f;
+    if (dispersionEnabled && mat.dispersionDelta > 0.0f && exiting) {
+        float rx = 0.0f;
+        float gy = 0.0f;
+        float bz = 0.0f;
+        for (int c = 0; c < 3; ++c) {
+            float ior = channelIor(mat.ior, mat.dispersionDelta, c);
+            float3 newDir = computeRefractDirection(D, geomN, ior);
+            float3 origin = offsetAlongRay(hitPoint, newDir, kRefractOriginOffset);
+            float3 child = castRayWhitted(scene, origin, newDir, depth + 1, kRefractRayTMin,
+                                          dispersionEnabled, rng);
+            if (c == 0) {
+                rx = child.x * refractColor.x;
+            } else if (c == 1) {
+                gy = child.y * refractColor.y;
+            } else {
+                bz = child.z * refractColor.z;
+            }
+        }
+        return make3(rx, gy, bz);
     }
 
     float3 newDir = computeRefractDirection(D, geomN, mat.ior);
     float3 origin = offsetAlongRay(hitPoint, newDir, kRefractOriginOffset);
-    float3 child = castRayWhitted(scene, origin, newDir, depth + 1, kRefractRayTMin, rng);
-    return mul3v(child, load3(mat.specular));
+    float3 child = castRayWhitted(scene, origin, newDir, depth + 1, kRefractRayTMin, dispersionEnabled, rng);
+    return mul3v(child, refractColor);
 }
 
 __device__ float3 generateCameraRay(const GpuCamera &cam, float px, float py) {
@@ -970,6 +1009,7 @@ __global__ void initCurandKernel(curandState *states, int width, int height, uns
 
 __global__ void renderKernel(const GpuSceneDevice scene, float *output, curandState *rngStates,
                              int width, int height, int spp, int mode, bool dispersion) {
+    // One thread ↔ one pixel; SPP is serial inside the thread (same structure as CPU main loop).
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) {
@@ -989,7 +1029,7 @@ __global__ void renderKernel(const GpuSceneDevice scene, float *output, curandSt
         float3 dir = generateCameraDir(scene.camera, jx, jy);
         float3 sampleColor;
         if (mode == GPU_WHITTED) {
-            sampleColor = castRayWhitted(scene, orig, dir, 0, kRayEps, localState);
+            sampleColor = castRayWhitted(scene, orig, dir, 0, kRayEps, dispersion, localState);
         } else {
             sampleColor = castRayPath(scene, orig, dir, 0, make3(1, 1, 1), true, mode,
                                       dispersion, -1, nullptr, localState);

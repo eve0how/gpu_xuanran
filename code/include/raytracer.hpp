@@ -21,7 +21,7 @@ constexpr int MAX_TRACE_DEPTH = 12;
 constexpr int RR_START_DEPTH = 8;
 constexpr float RR_MIN_SURVIVAL = 0.15f;
 constexpr float M_PI_F = 3.14159265358979323846f;
-constexpr float PATH_RADIANCE_CLAMP = 30.0f;
+constexpr float PATH_RADIANCE_CLAMP = 100.0f;
 
 enum class RenderMode {
     WHITTED,
@@ -514,22 +514,37 @@ private:
         Vector3f N = faceNormal(D, hit.getNormal());
         Vector3f reflected = D - 2.0f * Vector3f::dot(D, N) * N;
         Vector3f origin = offsetAlongNormal(hitPoint, N, ORIGIN_OFFSET);
-        Vector3f newThroughput = Vector3f(
-            throughput[0] * mat->getReflectColor()[0],
-            throughput[1] * mat->getReflectColor()[1],
-            throughput[2] * mat->getReflectColor()[2]);
+        Vector3f newThroughput = scaleDispAttenuation(throughput, mat->getReflectColor(), dispChannel);
         return clampRadiance(castRayPath(Ray(origin, reflected), depth + 1, newThroughput, true,
                                          nullptr, dispChannel));
     }
 
     static float channelIor(float baseIor, float delta, int channel) {
+        // R/G/B use base−δ/2, base, base+δ/2 — applied on exit split and along mono-channel child paths.
         if (channel == 0) {
-            return baseIor - delta;
+            return baseIor - delta * 0.5f;
         }
         if (channel == 2) {
-            return baseIor + delta;
+            return baseIor + delta * 0.5f;
         }
         return baseIor;
+    }
+
+    static Vector3f scaleDispAttenuation(const Vector3f &throughput, const Vector3f &attenColor,
+                                         int dispChannel) {
+        if (dispChannel < 0) {
+            return Vector3f(
+                throughput[0] * attenColor[0],
+                throughput[1] * attenColor[1],
+                throughput[2] * attenColor[2]);
+        }
+        if (dispChannel == 0) {
+            return Vector3f(throughput[0] * attenColor[0], 0.0f, 0.0f);
+        }
+        if (dispChannel == 1) {
+            return Vector3f(0.0f, throughput[1] * attenColor[1], 0.0f);
+        }
+        return Vector3f(0.0f, 0.0f, throughput[2] * attenColor[2]);
     }
 
     Vector3f traceRefractChild(const Ray &ray, const Hit &hit, RefractMaterial *mat, int depth,
@@ -541,15 +556,19 @@ private:
         float baseIor = mat->getRefractIndex();
         float delta = mat->getDispersionDelta();
 
-        if (dispersionEnabled && delta > 0.0f && dispChannel < 0) {
+        // Split white light into R/G/B only when exiting glass (air-boundary).
+        // Entry uses a single IOR so the prism stays clear; separation projects on the screen.
+        bool exiting = Vector3f::dot(D, geomN) > 0.0f;
+        if (dispersionEnabled && delta > 0.0f && dispChannel < 0 && exiting) {
             Vector3f result = Vector3f::ZERO;
             for (int c = 0; c < 3; ++c) {
                 float ior = channelIor(baseIor, delta, c);
                 Vector3f newDir = computeRefractDirection(D, geomN, ior);
                 Vector3f origin = offsetAlongRay(hitPoint, newDir, REFRACT_ORIGIN_OFFSET);
-                Vector3f child = castRayPath(Ray(origin, newDir), depth + 1, throughput, true,
+                Vector3f chTp = scaleDispAttenuation(throughput, refractColor, c);
+                Vector3f child = castRayPath(Ray(origin, newDir), depth + 1, chTp, true,
                                                nullptr, c);
-                result[c] = child[c] * refractColor[c];
+                result[c] = child[c];
             }
             return clampRadiance(result);
         }
@@ -560,10 +579,7 @@ private:
         }
         Vector3f newDir = computeRefractDirection(D, geomN, ior);
         Vector3f origin = offsetAlongRay(hitPoint, newDir, REFRACT_ORIGIN_OFFSET);
-        Vector3f newThroughput = Vector3f(
-            throughput[0] * refractColor[0],
-            throughput[1] * refractColor[1],
-            throughput[2] * refractColor[2]);
+        Vector3f newThroughput = scaleDispAttenuation(throughput, refractColor, dispChannel);
         return clampRadiance(castRayPath(Ray(origin, newDir), depth + 1, newThroughput, true,
                                          nullptr, dispChannel));
     }
@@ -613,7 +629,8 @@ private:
         float delta = refractMat->getDispersionDelta();
         const Vector3f &refractColor = refractMat->getRefractColor();
 
-        if (dispersionEnabled && delta > 0.0f) {
+        bool exiting = Vector3f::dot(D, geomN) > 0.0f;
+        if (dispersionEnabled && delta > 0.0f && exiting) {
             Vector3f result = Vector3f::ZERO;
             for (int c = 0; c < 3; ++c) {
                 float ior = channelIor(baseIor, delta, c);
@@ -631,6 +648,7 @@ private:
         return refractColor * child;
     }
 
+    // path tracing
     Vector3f castRayPath(const Ray &ray, int depth, const Vector3f &throughput,
                          bool countEmissive, const MisIndirectCtx *misCtx = nullptr,
                          int dispChannel = -1) const {
@@ -648,7 +666,7 @@ private:
         Vector3f D = ray.getDirection().normalized();
         Vector3f geomN = hit.getNormal().normalized();
 
-        if (mat->getType() == MaterialType::EMISSIVE) {
+        if (mat->getType() == MaterialType::EMISSIVE) { //
             if (!countEmissive) {
                 return Vector3f::ZERO;
             }
@@ -701,8 +719,8 @@ private:
 
         Vector3f direct = Vector3f::ZERO;
         if (useNEE()) {
-            direct = clampRadiance(sampleDirectEmissive(hitPoint, N, albedo) +
-                                   sampleDirectPointLights(hitPoint, N, albedo));
+            direct = sampleDirectEmissive(hitPoint, N, albedo) +
+                     sampleDirectPointLights(hitPoint, N, albedo);
         }
 
         float pdf = 0.0f;
@@ -728,8 +746,9 @@ private:
                     misCtx.glossyMat = nullptr;
                     misPtr = &misCtx;
                 }
-                Vector3f Li = castRayPath(Ray(origin, wi), depth + 1, throughput, true, misPtr,
-                                          dispChannel);
+                bool indirectEmissive = true;
+                Vector3f Li = castRayPath(Ray(origin, wi), depth + 1, throughput, indirectEmissive,
+                                          misPtr, dispChannel);
                 indirect = clampRadiance(Vector3f(
                     albedo[0] * Li[0],
                     albedo[1] * Li[1],
@@ -737,7 +756,7 @@ private:
             }
         }
 
-        return clampRadiance(direct + indirect);
+        return direct + clampRadiance(indirect);
     }
 
     Vector3f shadeGlossyPath(const Hit &hit, const Vector3f &hitPoint, const Vector3f &D,
@@ -751,8 +770,8 @@ private:
 
         Vector3f direct = Vector3f::ZERO;
         if (useNEE()) {
-            direct = clampRadiance(sampleDirectEmissiveBRDF(hitPoint, N, wo, mat) +
-                                   sampleDirectPointLightsBRDF(hitPoint, N, wo, mat));
+            direct = sampleDirectEmissiveBRDF(hitPoint, N, wo, mat) +
+                     sampleDirectPointLightsBRDF(hitPoint, N, wo, mat);
         }
 
         float kdLum = luminance(kd);
@@ -800,13 +819,14 @@ private:
                     misCtx.glossyMat = mat;
                     misPtr = &misCtx;
                 }
-                Vector3f Li = castRayPath(Ray(origin, wi), depth + 1, throughput, true, misPtr,
-                                          dispChannel);
+                bool indirectEmissive = true;
+                Vector3f Li = castRayPath(Ray(origin, wi), depth + 1, throughput, indirectEmissive,
+                                          misPtr, dispChannel);
                 indirect = clampRadiance(brdf * cosO * Li / (pdf * rrProb));
             }
         }
 
-        return clampRadiance(direct + indirect);
+        return direct + clampRadiance(indirect);
     }
 
     Vector3f shadeGlossyWhitted(const Ray &ray, const Hit &hit, const Vector3f &hitPoint) const {

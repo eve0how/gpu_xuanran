@@ -1,30 +1,26 @@
 
 PerspectiveCamera {
-    center 0 1 4.3
+    center 0 0.92 4.05
     direction 0 0 -1
     up 0 1 0
-    angle 35.5
+    angle 33
     width 1024
     height 1024
 }
 
 Lights {
-    numLights 3
-    PointLight {
-        position 0 1.9 0
-        color 2.1 1.95 1.85
+    numLights 2
+    AreaLight {
+        vertex0 -0.035 1.998 -0.035
+        vertex1 0.035 1.998 -0.035
+        vertex2 0.035 1.998 0.035
+        color 520 490 460
     }
     AreaLight {
-        vertex0 -0.20 1.998 -0.20
-        vertex1 0.20 1.998 -0.20
-        vertex2 0.20 1.998 0.20
-        color 50 48 45
-    }
-    AreaLight {
-        vertex0 -0.20 1.998 -0.20
-        vertex1 0.20 1.998 0.20
-        vertex2 -0.20 1.998 0.20
-        color 50 48 45
+        vertex0 -0.035 1.998 -0.035
+        vertex1 0.035 1.998 0.035
+        vertex2 -0.035 1.998 0.035
+        color 520 490 460
     }
 }
 
@@ -33,54 +29,51 @@ Background {
 }
 
 Materials {
-    numMaterials 11
+    numMaterials 10
     Material {
-        diffuseColor 0.70 0.73 0.68
-    }
-    Material {
-        diffuseColor 0.10 0.10 0.10
+        diffuseColor 0.68 0.70 0.66
     }
     Material {
-        diffuseColor 0.630 0.065 0.050
+        diffuseColor 0.06 0.06 0.06
     }
     Material {
-        diffuseColor 0.16 0.62 0.19
+        diffuseColor 0.58 0.08 0.06
     }
     Material {
-        diffuseColor 0.63 0.64 0.58
-    }
-    GlossyMaterial {
-        diffuseColor 0.75 0.17 0.16
-        specularColor 0.5 0.5 0.5
-        roughness 0.20
-        F0 0.04 0.04 0.04
-    }
-    GlossyMaterial {
-        diffuseColor 0.180 0.280 0.800
-        specularColor 0.5 0.5 0.5
-        roughness 0.20
-        F0 0.04 0.04 0.04
-    }
-    GlossyMaterial {
-        diffuseColor 0.16 0.62 0.19
-        specularColor 0.5 0.5 0.5
-        roughness 0.20
-        F0 0.04 0.04 0.04
+        diffuseColor 0.10 0.48 0.14
     }
     GlossyMaterial {
         diffuseColor 0 0 0
-        specularColor 0.9 0.7 0.3
-        roughness 0.05
-        F0 0.9 0.7 0.3
+        specularColor 0.97 0.80 0.10
+        roughness 0.005
+        F0 0.97 0.80 0.10
     }
     GlossyMaterial {
         diffuseColor 0 0 0
-        specularColor 0.85 0.85 0.88
-        roughness 0.05
-        F0 0.85 0.85 0.88
+        specularColor 0.94 0.94 0.97
+        roughness 0.004
+        F0 0.94 0.94 0.97
+    }
+    GlossyMaterial {
+        diffuseColor 0 0 0
+        specularColor 0.74 0.14 0.10
+        roughness 0.005
+        F0 0.74 0.14 0.10
+    }
+    GlossyMaterial {
+        diffuseColor 0 0 0
+        specularColor 0.10 0.52 0.90
+        roughness 0.004
+        F0 0.10 0.52 0.90
+    }
+    GlossyMaterial {
+        diffuseColor 0 0 0
+        specularColor 0.90 0.90 0.93
+        roughness 0.004
+        F0 0.90 0.90 0.93
     }
     EmissiveMaterial {
-        emission 50 48 45
+        emission 520 490 460
     }
 }
 
@@ -106,46 +99,46 @@ Group {
         normal -1 0 0
         offset -1
     }
-    MaterialIndex 4
+    MaterialIndex 1
     Plane {
         normal 0 0 1
         offset -1
     }
-    MaterialIndex 10
+    MaterialIndex 9
     Triangle {
-        vertex0 -0.20 1.998 -0.20
-        vertex1 0.20 1.998 -0.20
-        vertex2 0.20 1.998 0.20
+        vertex0 -0.035 1.998 -0.035
+        vertex1 0.035 1.998 -0.035
+        vertex2 0.035 1.998 0.035
     }
-    MaterialIndex 10
+    MaterialIndex 9
     Triangle {
-        vertex0 -0.20 1.998 -0.20
-        vertex1 0.20 1.998 0.20
-        vertex2 -0.20 1.998 0.20
+        vertex0 -0.035 1.998 -0.035
+        vertex1 0.035 1.998 0.035
+        vertex2 -0.035 1.998 0.035
+    }
+    MaterialIndex 4
+    Sphere {
+        center 0.02 0.70 0.02
+        radius 0.43
     }
     MaterialIndex 5
     Sphere {
-        center 0.05 0.70 0.05
-        radius 0.40
+        center -0.50 1.12 -0.36
+        radius 0.35
     }
     MaterialIndex 6
     Sphere {
-        center -0.52 1.12 -0.42
-        radius 0.33
+        center 0.60 0.38 0.40
+        radius 0.31
     }
     MaterialIndex 7
     Sphere {
-        center -0.55 0.42 0.58
-        radius 0.28
+        center -0.52 0.42 0.56
+        radius 0.31
     }
     MaterialIndex 8
     Sphere {
-        center 0.62 1.15 -0.30
-        radius 0.38
-    }
-    MaterialIndex 9
-    Sphere {
-        center 0.60 0.38 0.40
-        radius 0.26
+        center 0.60 1.14 -0.26
+        radius 0.37
     }
 }

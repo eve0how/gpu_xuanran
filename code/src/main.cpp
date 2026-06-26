@@ -169,6 +169,8 @@ int main(int argc, char *argv[]) {
 
     auto t0 = chrono::high_resolution_clock::now();
 
+    // Parallelize scanlines only: each (x,y) owns a RayTracer + seed — no shared mutable state.
+    // dynamic,4 hands out 4-row chunks so sky-heavy rows don't starve geometry-heavy rows.
 #ifdef _OPENMP
 #pragma omp parallel for schedule(dynamic, 4) if (useOmp)
 #endif
