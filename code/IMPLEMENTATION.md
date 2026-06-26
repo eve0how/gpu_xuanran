@@ -20,6 +20,7 @@
    - [7.4 GPU/CUDA 并行加速](#74-gpucuda-并行加速)
    - [7.5 MIS（多重重要性采样）](#75-mis多重重要性采样)
    - [7.6 深入：CPU/GPU/色散工作流程](#76-深入cpugpu色散工作流程)
+   - [7.7 零基础读懂：CPU/GPU/色散](#77-零基础读懂cpugpu色散)
 
 ---
 
@@ -1491,6 +1492,572 @@ build/PA1-2 testcases/scene_prism.txt disp_after.bmp path_nee 1024 gamma dispers
 | exit split | `traceRefractChild` | `castRayPath` `GPU_MAT_REFRACT` |
 | `scaleDispAttenuation` | `raytracer.hpp` | `cuda_path_tracer.cu` |
 | CLI | `parseDispersionFlag` in `main.cpp` | 传入 `renderWithCuda` |
+
+---
+
+### 7.7 零基础读懂：CPU/GPU/色散
+
+> **写给完全没接触过并行编程的同学**：§7.2 / §7.4 / §7.6 偏「工程师速查」；本节用生活比喻 + 逐步推演 + 对照表，把三个最容易答辩卡壳的概念讲透。  
+> 建议阅读顺序：先扫一眼 §7.6 的流程图，再读本节；两节 **互补**，本节不删 §7.6 任何内容。
+
+---
+
+#### 7.7.1 CPU OpenMP：像 10 个人各画不同行
+
+##### 「并行」到底是什么？（不用术语版）
+
+想象你要给一面 **1024 行 × 1024 列** 的大墙刷漆：
+
+- **串行（默认）**：只有你一个人。你从第 0 行刷到第 1023 行，一行一行来。
+- **并行（加 `omp`）**：叫来 8～10 个帮手。大家 **同时** 刷，但 **每人负责不同的行**——你刷第 0～3 行，他刷第 4～7 行……墙刷完的总时间 ≈ 原来的 1/8（理想情况）。
+
+关键：**每个人刷自己那块，不用和别人商量「这一格刷什么色」**——因为路径追踪里，每个像素的颜色只取决于「从相机穿过这个像素发出的光线」，和隔壁像素无关。
+
+##### 为什么路径追踪的像素可以并行？
+
+路径追踪在 `main.cpp` 里本质是一个三重循环：
+
+```
+for 每一行 y:
+    for 每一列 x:
+        for 每一个采样 s (SPP):
+            算这个像素的颜色
+        写入 Image[x,y]
+```
+
+对固定 `(x, y, s)`：
+
+1. `seed = f(x, y, s)` 是 **确定性公式**，不依赖全局计数器；
+2. `RayTracer tracer(scene, mode, seed, …)` 是 **新建对象**，RNG 状态在 tracer 内部，不共享；
+3. `scene` 全程 **只读**（解析完就不再改）；
+4. `dImg.SetPixel(x, y, …)` 保证 **每个坐标只被一个线程写**。
+
+所以：**先算哪一行、用几个线程，最终每个像素的颜色应该一样**（只要 seed 公式不变）。OpenMP 只改变「谁先算完」，不改变「算什么」。
+
+##### 一步一步：单像素串行 vs 多行并行
+
+下面用 **像素 (128, 256)**、**SPP=2** 举例，对照 `main.cpp` 真实代码。
+
+**串行时（只有你一个线程）**，程序大致按这个顺序执行：
+
+| 步骤 | 代码在做什么 | 对应行号 |
+|------|-------------|----------|
+| 1 | 读场景、建 `Image`、解析 `useOmp=false` | ```129:131:code/src/main.cpp``` |
+| 2 | `y` 从 0 递增；当 `y==256` 时进入该行 | ```177:177:code/src/main.cpp``` |
+| 3 | `x` 从 0 递增；当 `x==128` 时处理该像素 | ```178:178:code/src/main.cpp``` |
+| 4 | `s=0`：抖动 `jx,jy`，算 `seed`，新建 `RayTracer`，`trace()` | ```180:192:code/src/main.cpp``` |
+| 5 | `s=1`：再来一次，累加到 `accum` | 同上 |
+| 6 | `SetPixel(128, 256, accum/2)` | ```194:194:code/src/main.cpp``` |
+| 7 | 继续 `x=129…`，直到整行结束，再 `y=257…` | 循环继续 |
+
+**并行时（例如 8 线程 + `omp`）**，变化只有一处：
+
+```172:176:code/src/main.cpp
+    // Parallelize scanlines only: each (x,y) owns a RayTracer + seed — no shared mutable state.
+    // dynamic,4 hands out 4-row chunks so sky-heavy rows don't starve geometry-heavy rows.
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 4) if (useOmp)
+#endif
+```
+
+| 步骤 | 发生了什么 |
+|------|-----------|
+| 1 | OpenMP **启动线程池**（例如 8 个 worker） |
+| 2 | 运行时把 `y` 循环 **拆成任务**；每个任务是一段连续的行 |
+| 3 | 空闲线程从任务队列 **领下一批行** 去做；**某时刻** 可能线程 A 在做 `y=256`（含像素 128,256），线程 B 在做 `y=0` |
+| 4 | 像素 (128,256) 内部的 `x` 循环、`spp` 循环、seed、`RayTracer` —— **仍在单个线程里串行**，和串行版逻辑相同 |
+| 5 | 全部 `y` 完成后，主线程打印 `Render time`，`SaveBMP` |
+
+**比喻**：串行 = 你一个人按页码读书；并行 = 8 人各拿几章同时读，但 **每人读自己那章的字**，不会两人改同一页。
+
+##### 命令行里写 `omp` 后，程序内部发生了什么？
+
+以命令为例：
+
+```bash
+build/PA1-2 testcases/scene_path.txt out.bmp path_nee 64 gamma omp
+```
+
+**一步一步：**
+
+1. **参数扫描**（`argc≥4` 起）：`parseOmpFlag` 在 `argv` 里找 `omp` / `parallel` → `useOmp = true`  
+   ```61:64:code/src/main.cpp```
+2. **打印状态**：`omp: on (8 threads)` —— 8 来自 `omp_get_max_threads()`  
+   ```133:141:code/src/main.cpp```
+3. **CUDA 检查**：若还带 `cuda` 且 GPU 成功，会 **直接 return**，根本不会进 OpenMP 循环（见下文「两个厨房」）  
+   ```153:164:code/src/main.cpp```
+4. **计时开始** → 进入带 `#pragma omp parallel for` 的 `y` 循环  
+5. **计时结束** → `Render time: … s` → `SaveBMP`
+
+若构建时没链 OpenMP，会看到 `OpenMP not available at build time`，并 **强制 `useOmp=false`**：
+
+```142:146:code/src/main.cpp```
+
+##### `schedule(dynamic, 4)` 是什么意思？（带数字例子）
+
+`#pragma omp parallel for` 告诉编译器：「这个 `for (y)` 可以拆给多线程」。
+
+`schedule(dynamic, 4)` 告诉运行时：「任务按 **每次 4 行** 一块动态分配」。
+
+**例子**：`height=1024`，8 线程，dynamic chunk=4
+
+| 时刻 | 可能的分工 |
+|------|-----------|
+| T0 | 线程1 领 y=0..3，线程2 领 y=4..7，…，线程8 领 y=28..31 |
+| T1 | 线程3 先做完（也许这 4 行多是天空，很快）→ **立刻** 再领 y=32..35 |
+| T2 | 线程5 还在啃 y=16..19（复杂几何+玻璃）→ 其他线程不会傻等，继续领新块 |
+
+若用默认 `static`（按线程号固定分段），可能出现：线程1 分到「全是复杂模型」的上半屏，线程8 分到「大片黑背景」——后者早早闲着，**加速比上不去**。`dynamic, 4` 就是 **干完再领活**，用少量调度开销换负载均衡。
+
+##### 为什么 `cuda` 和 `omp` 不能同时用？——「两个厨房」比喻
+
+- **CPU + OpenMP** = 你家 **中式厨房**：几个厨师（线程）共用 **同一套灶和冰箱**（CPU 内存里的 `SceneParser`、`Image`），分工切菜炒菜。
+- **GPU + CUDA** = 隔壁 **西式中央厨房**：有成百上千个小工位（CUDA 线程），食材要先 **整车运到那边**（`cudaMemcpy`），在那边做完再 **运回来**（像素回读）。
+
+`main.cpp` 的设计是 **二选一**：
+
+```153:164:code/src/main.cpp
+#ifdef USE_CUDA
+    if (useCuda) {
+        double cudaSec = 0.0;
+        if (renderWithCuda(scene, dImg, mode, spp, useDispersion, cudaSec)) {
+            cout << "Render time: " << cudaSec << " s (CUDA)" << endl;
+            dImg.SaveBMP(outputFile.c_str(), applyGamma);
+            cout << "Hello! Computer Graphics!" << endl;
+            return 0;
+        }
+        ...
+    }
+#endif
+```
+
+GPU 路径在 `renderWithCuda` 里已经 **并行到像素级**（一线程一像素），再套 OpenMP 等于「中央厨房已经 4096 人同时炒菜，又让中式厨房再派 8 个人来帮忙」—— **重复、且两套运行时抢资源**。所以成功走 CUDA 后 **直接 `return`**，下面的 `#pragma omp` 循环 **不会执行**。
+
+若 GPU 失败，会打印 `falling back to CPU`，此时你传的 `omp` **仍然有效**。
+
+##### 实测加速比（来自 `REPORT.md` §5.6）
+
+环境：`scene_path.txt`，`path_nee`，SPP=32，分辨率 1024×1024，约 10 线程（2025-06-25）：
+
+| 模式 | Render time | 相对加速 |
+|------|-------------|----------|
+| 串行（无 `omp`） | **799.9 s** | 1.0× |
+| 并行（`omp`） | **104.9 s** | **≈7.6×** |
+
+Whitted 快速自检（`scene_whitted.txt`，SPP=1）：2.24 s → 0.35 s（≈6.4×）。
+
+**如何自己复现**：
+
+```bash
+build/PA1-2 testcases/scene_path.txt output/omp_serial.bmp path_nee 32 gamma
+build/PA1-2 testcases/scene_path.txt output/omp_parallel.bmp path_nee 32 gamma omp
+# 对比终端 Render time；两图应逐字节一致（见 REPORT.md）
+```
+
+> **你可能会问…**
+>
+> **Q：加了 `omp` 图会不会变？**  
+> A：不应该。每像素 seed 只跟 `(x,y,s)` 有关，与线程数无关。若不一致，说明 `trace()` 里引入了 **共享可变状态**（本项目已避免）。
+>
+> **Q：为什么加速不是正好 8×？**  
+> A：有 **固定开销**（线程创建、调度）、**内存带宽**上限、以及无法并行的部分（读场景、SaveBMP）。这叫 Amdahl 定律——8 核常见 5～8× 已很好。
+>
+> **Q：Whitted SPP=1 开 `omp` 有用吗？**  
+> A：有用但绝对时间很短（秒级）；主要收益在 **path 模式 + 高 SPP + 大分辨率**。
+>
+> **Q：并行时为什么看不到 Scanline 进度？**  
+> A：多线程同时 `cout` 会交错成乱码；且旧版用 `omp critical` 打进度会把并行 **锁成串行**（REPORT 记载 800s 惨案）。现在并行模式只打最终 `Render time`。
+>
+> **Q：线程数怎么改？**  
+> A：`export OMP_NUM_THREADS=4`（标准 OpenMP 环境变量，不是程序参数）。
+
+---
+
+#### 7.7.2 GPU CUDA：把场景「拍扁」搬到显卡
+
+##### 为什么不能把 C++ 类直接拷到 GPU？
+
+CPU 上的场景长这样（面向对象 + 指针）：
+
+```
+SceneParser
+  └─ Group*
+       ├─ Transform* → Mesh*  →  virtual bool intersect(Ray, Hit&)
+       ├─ Sphere*
+       └─ Plane*
+```
+
+GPU 线程 **不能** 安全地做这些事：
+
+| CPU 习以为常 | GPU 上的问题 |
+|-------------|-------------|
+| `dynamic_cast`、`virtual` 虚函数 | 设备端没有完整 C++ RTTI / vtable 生态 |
+| `vector<Object3D*>` 指针跳转 | 显存与主机指针地址空间不同 |
+| 递归遍历场景树 | 数千线程同时乱走指针 → 慢且难调试 |
+| `new` / `delete` | 内核里动态分配极不推荐 |
+
+**结论**：必须在 **CPU 上** 先把场景翻译成 GPU 能读的 **纯数据数组**（Structure of Arrays），再 `cudaMemcpy` 上传。这就是 **场景扁平化（Scene Flattening）**。
+
+##### 扁平化示意图：Sphere 对象 → GpuSphere 数组
+
+```mermaid
+flowchart TB
+    subgraph CPU["CPU 内存（main 启动后）"]
+        SP[SceneParser 场景树]
+        SF[SceneFlattener<br/>cuda_scene_builder.cpp]
+        GH[GpuSceneHost<br/>vector 数组在 Host]
+        SP --> SF --> GH
+    end
+    subgraph GPU["GPU 显存"]
+        GD[GpuSceneDevice<br/>只含指针+数量]
+        ARR["materials[] spheres[] planes[] triangles[] lights[]"]
+        GD --> ARR
+    end
+    GH -->|"cudaMalloc + cudaMemcpy HostToDevice"| ARR
+```
+
+**具体例子**——场景里有一个球：
+
+| CPU 侧 | GPU 侧 `GpuSphere` 一条记录 |
+|--------|------------------------------|
+| `Sphere` 对象，中心 `(0, 0.5, 0)`，半径 `0.3` | `center[3]`, `radius`, `matId` |
+| `Material*` 指向 `RefractMaterial` | 不存指针，只存 `matId=4` → 去 `materials[4]` 查 IOR |
+
+`Transform` 在扁平化时 **已经乘进顶点**（棱镜的旋转/缩放烘焙进每个三角形的世界坐标），GPU 不再保留「父节点」。
+
+入口注释写得很直白：
+
+```33:34:code/src/cuda_scene_builder.cpp
+    // Walk the CPU scene tree once and bake world-space SOA arrays — GPU kernels can't virtual-dispatch.
+    explicit SceneFlattener(const SceneParser &scene) : scene(scene) {}
+```
+
+##### `renderKernel`：线程 (128, 256) = 像素 (128, 256)
+
+CUDA 用 **二维网格** 覆盖图像。每个线程算自己的 `(x,y)`：
+
+```1010:1044:code/src/cuda_path_tracer.cu
+__global__ void renderKernel(const GpuSceneDevice scene, float *output, curandState *rngStates,
+                             int width, int height, int spp, int mode, bool dispersion) {
+    // One thread ↔ one pixel; SPP is serial inside the thread (same structure as CPU main loop).
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    ...
+    for (int s = 0; s < spp; ++s) {
+        ...
+        sampleColor = castRayPath(...);
+        accum = add3(accum, sampleColor);
+    }
+    ...
+    output[idx + 0] = accum.x;
+```
+
+**映射公式**（与 §7.6.2 相同，这里再写一遍方便记忆）：
+
+```
+block 大小 = 16×16 = 256 线程
+x = blockIdx.x * 16 + threadIdx.x
+y = blockIdx.y * 16 + threadIdx.y
+```
+
+若 `x=128, y=256`：某个 block 里的某个 thread 恰好负责这个像素，在内层 **串行** 跑完 `spp` 次 `castRayPath`，最后写 `output[(256*width+128)*3 + {0,1,2}]`。
+
+```mermaid
+flowchart LR
+    subgraph Grid["Grid（覆盖整幅图）"]
+        B1["Block (0,0)<br/>像素 0..15"]
+        B2["Block (8,16)<br/>含像素 128,256"]
+        B3["..."]
+    end
+    B2 --> T["1 thread = 1 pixel<br/>SPP 在 thread 内 for 循环"]
+```
+
+##### `cudaMemcpy` Host→Device：一步一步（以材质数组为例）
+
+`uploadScene` 对 **每一种** 几何/材质/光源重复同一模式：
+
+```1096:1101:code/src/cuda_path_tracer.cu
+    if (!check(cudaMalloc(&g_device.materials, sizeof(GpuMaterial) * host.numMaterials), "materials")) {
+        return false;
+    }
+    if (!check(cudaMemcpy(g_device.materials, host.materials, sizeof(GpuMaterial) * host.numMaterials,
+                          cudaMemcpyHostToDevice), "copy materials")) {
+```
+
+** numbered 全流程（材质为例）**：
+
+1. **CPU**：`buildGpuSceneHost(scene)` 填好 `host.materials`（普通 `std::vector`，在 **主机内存**）
+2. **`cudaMalloc`**：在 **显卡** 上开出同样大小的显存 → 得到设备指针 `g_device.materials`
+3. **`cudaMemcpy(..., HostToDevice)`**：把主机数组 **逐字节复制** 到显存
+4. 球、平面、三角、光源…… **各复制一遍**
+5. 再 `cudaMalloc` 像素缓冲 `pixels` 和 `rngStates`
+6. 把各指针填进 `GpuSceneDevice sceneDev`，传给 `renderKernel`
+7. 内核跑完 → **`cudaMemcpy(DeviceToHost)`** 把 `pixels` 拉回主机  
+   ```1266:1276:code/src/cuda_path_tracer.cu```
+8. **CPU 双重循环** `SetPixel` 填进 `Image`（gamma 仍在 `SaveBMP` 做）
+
+##### curand vs CPU 随机数：图不一样，统计应接近
+
+| | CPU | GPU |
+|---|-----|-----|
+| 发生器 | `RayTracer` 内 xorshift / LCG（由 `seed` 初始化） | `curand_uniform`（`curandState` 每像素一个） |
+| 初始化 | `seed = 1 + x + 7919*y + 104729*s` 每 **样本** 一个新 tracer | `curand_init(104729, pixelIndex, 0, &state)` 每 **像素** 一条序列 |
+| 子像素抖动 | `hash01(x,y,s)` 确定性 | **相同** `hash01` 公式 |
+
+因此：**两张图的 Monte Carlo 噪声纹理不会逐像素相同**，但同一 SPP 下平均亮度、软阴影形态应接近；SPP 越高越像。
+
+##### GPU 渲染完整流水线（1～10 步）
+
+| 步骤 | 谁执行 | 做什么 |
+|------|--------|--------|
+| **1** | `main` | 解析 CLI，`useCuda=true` |
+| **2** | `main` | `SceneParser` 读 `.txt`（仍在 CPU） |
+| **3** | `buildGpuSceneHost` | 场景树 → `GpuSceneHost` 扁平数组 |
+| **4** | `uploadScene` | `cudaMalloc` + `cudaMemcpy` H→D |
+| **5** | `initCurandKernel` | 每像素初始化 `curandState` |
+| **6** | `renderKernel` | 一线程一像素 × SPP 内层循环追踪 |
+| **7** | GPU | 结果写入设备端 `pixels[]` |
+| **8** | `cudaMemcpy` | D→H 拉回 `hostPixels` |
+| **9** | `main` / `renderWithCuda` | `Image::SetPixel` |
+| **10** | `SaveBMP` | 可选 gamma 编码写盘 |
+
+`renderWithCuda` 把 3～8 包在一起：
+
+```1205:1256:code/src/cuda_path_tracer.cu
+bool renderWithCuda(const SceneParser &scene, Image &image, RenderMode mode, int spp,
+                    bool dispersion, double &renderSec) {
+    ...
+    GpuSceneHost host = buildGpuSceneHost(scene);
+    ...
+    if (!uploadScene(host, width, height)) {
+        return false;
+    }
+    ...
+    initCurandKernel<<<grid, block>>>(...);
+    renderKernel<<<grid, block>>>(...);
+```
+
+##### CPU 循环 vs GPU 内核：并排对照表
+
+| 维度 | CPU `main.cpp` | GPU `renderKernel` |
+|------|----------------|-------------------|
+| **并行单位** | OpenMP：多 **行** `y` | CUDA：多 **像素** `(x,y)` |
+| **典型并行度** | 8～16 线程 | 数十万线程（1024×1024） |
+| **场景数据** | `Group*` 树，`intersect` 虚函数 | `GpuSceneDevice` 扁平数组，`intersectScene` 线性扫 |
+| **追踪函数** | `RayTracer::trace()` | `__device__ castRayPath` / `castRayWhitted` |
+| **SPP 循环** | 线程内 `for s` | 同：线程内 `for s` |
+| **抖动** | `hash01` | `hash01`（相同） |
+| **随机** | 每样本 `RayTracer(scene, seed)` | `curand` 每像素状态 |
+| **写像素** | `dImg.SetPixel(x,y,…)` 并行安全 | 每线程写自己 `output[idx]`，无竞争 |
+| **色散 / NEE / MIS** | `raytracer.hpp` | `cuda_path_tracer.cu` 镜像逻辑 |
+| **成功后** | 继续 CPU 计时 | `main` **return**，不走 OpenMP |
+
+> **你可能会问…**
+>
+> **Q：GPU 一定比 CPU 快吗？**  
+> A：路径追踪大场景 + 高 SPP 通常快很多；但有小 **上传开销**（`uploadScene`），极小图/Whitted 1 spp 优势可能不大。
+>
+> **Q：Unified Memory 是什么？为啥不用？**  
+> A：`cudaMallocManaged` 让 CPU/GPU 共用指针，驱动自动迁页。本项目主路径用 **显式上传**，布局清晰、行为可预测（见 `cuda_alloc.hpp` 备注）。
+>
+> **Q：纹理贴图 GPU 能渲染吗？**  
+> A：当前扁平化只传材质 **常数**；带 BMP 纹理的场景 GPU 可能与 CPU 不一致——答辩可如实说已知限制。
+>
+> **Q：没 NVIDIA 显卡能编译吗？**  
+> A：能。没 `nvcc` 时只编 CPU；传 `cuda` 会回退 CPU + 可选 `omp`。
+
+---
+
+#### 7.7.3 色散：棱镜如何把白光拆成彩虹
+
+##### 物理直觉（先建立画面感）
+
+- **白光** = 许多波长混在一起（红橙黄绿蓝靛紫）。
+- **玻璃折射率 \(n\)** 随波长略变：一般 **蓝光 \(n\) 更大、红光更小** → 同样入射角，蓝偏得更厉害。
+- **棱镜**：光 **进入** 时各波长还挤在一起；在 **出射** 回到空气时，不同方向分开 → 屏幕上看到 **分离的色带**。
+
+##### 我们的简化：不做连续光谱，只追 3 条路
+
+真实光谱有无穷多波长；作业里用 **3 条单色路径** 近似：
+
+| 通道 c | 颜色 | 折射率（`channelIor`） |
+|--------|------|------------------------|
+| 0 | R 红 | `base - δ/2` |
+| 1 | G 绿 | `base` |
+| 2 | B 蓝 | `base + δ/2` |
+
+`scene_prism.txt` 里棱镜材质：`refractIndex 1.52`，`dispersionDelta 0.10` → 红 ≈1.47，绿 1.52，蓝 ≈1.57。
+
+```522:531:code/include/raytracer.hpp
+    static float channelIor(float baseIor, float delta, int channel) {
+        // R/G/B use base−δ/2, base, base+δ/2 — applied on exit split and along mono-channel child paths.
+        if (channel == 0) {
+            return baseIor - delta * 0.5f;
+        }
+        if (channel == 2) {
+            return baseIor + delta * 0.5f;
+        }
+        return baseIor;
+    }
+```
+
+CLI 必须加 **`dispersion`** 才会启用（否则 `dispersionEnabled=false`，玻璃与普通折射无异）：
+
+```116:117:code/src/main.cpp```
+
+##### **关键设计**：入射统一，出射分裂（必背）
+
+很多初学者误以为「一进玻璃就分 RGB」——**本项目故意不在入射面分裂**：
+
+- **进入玻璃**（空气→介质）：**一条** 折射光线，`dispChannel=-1`（白光），IOR 用 `base` 或尚未分通道。
+- **离开玻璃**（介质→空气）：若 `dispersion && delta>0 && dispChannel<0`，**分裂为 3 条** 子路径，各带 `dispChannel=0/1/2`。
+
+判定「是否在出射」：`exiting = dot(D, geomN) > 0`（光线从玻璃 **内部** 指向外，与几何外法线同向）。
+
+**ASCII 光路示意图**（俯视，棱镜在中间，后墙在远处）：
+
+```
+                    窄缝 AreaLight（天花板 0.15m 开口）
+                              |
+                              |  近似平行的白光柱
+                              v
+    空气 =====================|===================== 空气
+                               \
+                                \  进入：1 条折射（IOR≈1.52，不分 RGB）
+                                 \
+    玻璃  =======================\======================= 玻璃
+                                  \   （内部仍视为无色透明）
+                                   \
+    空气 ===========================\==================== 空气
+                                     \  出射：3 条（R/G/B 不同折射角）
+                                      \__
+                                         \___ R  → 后墙偏上
+                                          \__ G → 后墙中间
+                                           \_ B → 后墙偏下
+
+    相机在前方 (0, 0.88, 3.5) 看向盒子内部 → 看到后墙上的彩色条带
+```
+
+代码注释与实现一致：
+
+```559:572:code/include/raytracer.hpp
+        // Split white light into R/G/B only when exiting glass (air-boundary).
+        // Entry uses a single IOR so the prism stays clear; separation projects on the screen.
+        bool exiting = Vector3f::dot(D, geomN) > 0.0f;
+        if (dispersionEnabled && delta > 0.0f && dispChannel < 0 && exiting) {
+            Vector3f result = Vector3f::ZERO;
+            for (int c = 0; c < 3; ++c) {
+                float ior = channelIor(baseIor, delta, c);
+                ...
+                result[c] = child[c];
+            }
+            return clampRadiance(result);
+        }
+```
+
+GPU 同逻辑：
+
+```690:704:code/src/cuda_path_tracer.cu
+    if (mat.type == GPU_MAT_REFRACT) {
+        ...
+        // Exit split only (entry stays single-ray): different IOR per channel projects rainbow on screen.
+        if (dispersionEnabled && mat.dispersionDelta > 0.0f && dispChannel < 0 && exiting) {
+            ...
+            for (int c = 0; c < 3; ++c) {
+                float ior = channelIor(mat.ior, mat.dispersionDelta, c);
+```
+
+##### `scaleDispAttenuation` 是干什么的？——防止玻璃里「又混回白色」
+
+分裂后若三条路径都带着完整 RGB throughput，在玻璃内多次反弹后会把能量 **加回成白光**，彩虹被冲掉。
+
+因此 `scaleDispAttenuation` 在 `dispChannel=c` 时 **只保留第 c 个通道**：
+
+```533:548:code/include/raytracer.hpp
+    static Vector3f scaleDispAttenuation(const Vector3f &throughput, const Vector3f &attenColor,
+                                         int dispChannel) {
+        if (dispChannel < 0) {
+            return Vector3f(
+                throughput[0] * attenColor[0],
+                throughput[1] * attenColor[1],
+                throughput[2] * attenColor[2]);
+        }
+        if (dispChannel == 0) {
+            return Vector3f(throughput[0] * attenColor[0], 0.0f, 0.0f);
+        }
+        ...
+    }
+```
+
+**比喻**：分裂后每条路只戴 **一副单色眼镜**（只通 R 或只通 G 或只通 B），直到再次出射或命中漫反射。
+
+##### `scene_prism.txt` 场景走读：缝在哪、屏在哪、相机看什么
+
+| 场景元素 | 文件位置 | 作用 |
+|----------|----------|------|
+| **相机** | `center 0 0.88 3.50`，朝 `-Z` | 在盒子前方看向内部 |
+| **窄缝光源** | 两个 `AreaLight` + 发光三角形，`y≈1.998`，开口约 **0.15m** | 模拟太阳光通过狭缝的 **平行光束** |
+| **棱镜** | `MaterialIndex 4` + `RefractiveMaterial` + `mesh/prism.obj` | 色散体，`delta=0.10` |
+| **后墙「屏幕」** | 缺少 `MaterialIndex 6` 的后墙平面？——实际后墙是 `MaterialIndex 0` 的 `Plane normal 0 0 1 offset -1`（**z=-1** 墙， diffuse 0.97） | 彩虹落在 **浅灰后墙** |
+| **暗接收屏** | `MaterialIndex 6`：`diffuseColor 0.08` —— 场景中 **未绑定到几何**（材质表有，物体未用） | 答辩时以 **后墙 z=-1** 为主接收面 |
+| **地板/侧墙** | 各 `Plane` | 围成 Cornell 式盒子 |
+
+棱镜摆放：`Translate(0, 0.46, 0.02)` + 旋转 + `Scale 1.1`，大致在房间 **中央偏前**。
+
+**推荐命令**：
+
+```bash
+# 无色散：后墙多为亮白斑（各色重叠）
+build/PA1-2 testcases/scene_prism.txt disp_before.bmp path_nee 1024 gamma cuda
+
+# 有色散：后墙可见红绿蓝分离条带
+build/PA1-2 testcases/scene_prism.txt disp_after.bmp path_nee 1024 gamma dispersion cuda
+```
+
+##### before vs after：看图时盯什么
+
+| 对比项 | 无 `dispersion` | 有 `dispersion` |
+|--------|----------------|-----------------|
+| 后墙光斑 | 近似 **白色/灰色** 集中亮斑 | **横向拉开** 的红、绿、蓝条带（顺序与棱镜朝向有关） |
+| 棱镜内部 | 透明无色 | 仍应 **无色**（入射未分裂） |
+| 光谱边缘 | 模糊白光 | 色带之间暗区，带 **蒙特卡洛噪声** |
+
+验收图：`output/acceptance/dispersion_before.png` vs `dispersion_after.png`。
+
+##### 为什么仍然很噪？——焦散 + 玻璃挡 NEE
+
+| 原因 | 通俗解释 |
+|------|----------|
+| **焦散（caustics）** | 窄缝 → 棱镜 → 后墙：光路 **极窄**，随机路径很难「碰巧」打中亮带，方差大 |
+| **三分路径** | 出射一次变 3 条递归，样本被分到 3 个方向，每条更「饿」 |
+| **NEE 与玻璃** | `isSegmentOccluded` 里 **玻璃算遮挡**（不像 Whitted 阴影那样透明）→ 很难直接采样光源穿过棱镜的复杂路径 |
+| **高亮细条** | 后墙只有细条极亮，周围暗 → 肉眼对颗粒特别敏感 |
+
+色散本身 **不引入新的随机数**，分叉是 **确定性** 的；噪声是 **路径追踪 + 难光路** 的天然结果。提高 SPP（512、1024）会好，但可能仍比 Cornell 盒噪。
+
+> **你可能会问…**
+>
+> **Q：Whitted 模式能出色散吗？**  
+> A：能。`castRayWhitted` 折射分支同样有 exit split（与路径追踪共用 `channelIor` 思想）。
+>
+> **Q：为什么不在入射面就分 RGB？**  
+> A：物理上白光 **一起进入** 棱镜；在内部分开需要更复杂模型。我们在 **出射** 分，既符合「屏幕上看到彩虹」的效果，又避免内部「彩色玻璃块」假象。
+>
+> **Q：`dispChannel≥0` 后还会再分裂吗？**  
+> A：不会。已经是单色路径，只用对应 `channelIor` 继续折射。
+>
+> **Q：和参考图 geo-pic 一样吗？**  
+> A：本项目 **独立实现**（`traceRefractChild` / GPU `GPU_MAT_REFRACT`），思路同为「出射分通道 + 单通道 throughput」，但未拷贝外部代码。
+
+---
+
+#### 7.7.4 三合一速记卡（答辩前 30 秒）
+
+```
+CPU omp  = 多线程分「行」刷像素，schedule(dynamic,4) 动态领 4 行一块；与 cuda 互斥。
+GPU cuda = 场景拍扁 → cudaMemcpy 上传 → 一线程一像素 renderKernel → 像素拉回 SaveBMP。
+色散     = 进玻璃 1 条路，出玻璃 3 条路(R/G/B IOR)；scaleDispAttenuation 防混色；scene_prism 看缝+棱镜+后墙。
+```
 
 ---
 

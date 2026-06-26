@@ -413,7 +413,7 @@ __device__ float channelIor(float baseIor, float delta, int channel) {
     return baseIor;
 }
 
-// Keep a single wavelength per path after dispersion split (matches geo-pic style).
+// After exit split each child keeps one RGB channel — prevents re-mixing to white inside glass.
 __device__ float3 scaleDispAttenuation(float3 throughput, float3 attenColor, int dispChannel) {
     if (dispChannel < 0) {
         return mul3v(throughput, attenColor);
