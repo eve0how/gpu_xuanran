@@ -70,16 +70,17 @@ $B testcases/scene09_glossy.txt output/scene09_glossy_cuda.bmp path_nee 64 cuda
 $B testcases/scene_glossy.txt output/scene_glossy_cuda.bmp path_nee 64 cuda
 $B testcases/scene_glossy.txt output/scene_glossy_mis_cuda.bmp path_mis 64 cuda
 
-# 5. MIS demo
+# 5. MIS demo — compare path vs path_nee vs path_mis at 32 spp (use scene_mis_demo, NOT scene_glossy:
+#    scene_glossy has only a point light, so path_nee and path_mis are identical)
 $B testcases/scene_mis_demo.txt output/mis_demo_brdf_32_cuda.bmp path 32 gamma cuda
 $B testcases/scene_mis_demo.txt output/mis_demo_nee_32_cuda.bmp path_nee 32 gamma cuda
 $B testcases/scene_mis_demo.txt output/mis_demo_mis_32_cuda.bmp path_mis 32 gamma cuda
 
-# 6. Showcase + dispersion
-$B testcases/scene_showcase.txt output/showcase_path_nee_cuda.bmp path_nee 64 gamma cuda
-$B testcases/scene_showcase.txt output/showcase_path_mis_cuda.bmp path_mis 64 gamma cuda
-$B testcases/scene_showcase.txt output/dispersion_before_cuda.bmp path_nee 64 gamma cuda
-$B testcases/scene_showcase.txt output/dispersion_after_cuda.bmp path_nee 64 gamma dispersion cuda
+# 6. Showcase + dispersion — glass cube (~x=350-450, y=500-650) shows rainbow fringes at 128+ spp
+$B testcases/scene_showcase.txt output/showcase_path_nee_cuda.bmp path_nee 128 gamma cuda
+$B testcases/scene_showcase.txt output/showcase_path_mis_cuda.bmp path_mis 128 gamma cuda
+$B testcases/scene_showcase.txt output/dispersion_before_cuda.bmp path_nee 128 gamma cuda
+$B testcases/scene_showcase.txt output/dispersion_after_cuda.bmp path_nee 128 gamma dispersion cuda
 
 # 7. Textures
 ./build/gen_textures 2>/dev/null || true

@@ -288,8 +288,16 @@ private:
         return pdf;
     }
 
-    static float misCombineDenom(float pdfLight, float pdfBrdf) {
-        return pdfLight + pdfBrdf;
+    static float misPowerDenom(float pdfLight, float pdfBrdf) {
+        return pdfLight * pdfLight + pdfBrdf * pdfBrdf;
+    }
+
+    static float misWeightPower(float pdf, float pdfLight, float pdfBrdf) {
+        float denom = misPowerDenom(pdfLight, pdfBrdf);
+        if (denom < 1e-8f) {
+            return 0.0f;
+        }
+        return pdf * pdf / denom;
     }
 
     bool isSegmentOccluded(const Vector3f &from, const Vector3f &to, const Vector3f &N) const {
@@ -357,11 +365,11 @@ private:
         if (useMIS()) {
             float pdfLight = dist2 / (lightArea * cosL);
             float pdfBrdf = pdfDiffuseBRDF(cosO);
-            float misDenom = misCombineDenom(pdfLight, pdfBrdf);
-            if (misDenom < 1e-8f) {
+            float misW = misWeightPower(pdfLight, pdfLight, pdfBrdf);
+            if (misW < 1e-8f) {
                 return false;
             }
-            contrib += albedo * emission * cosO / (M_PI_F * misDenom);
+            contrib += albedo * emission * cosO / (M_PI_F * pdfLight) * misW;
         } else {
             contrib += albedo * emission * cosO * cosL * lightArea / (M_PI_F * dist2);
         }
@@ -402,11 +410,11 @@ private:
         if (useMIS()) {
             float pdfLight = dist2 / (lightArea * cosL);
             float pdfBrdf = pdfGlossyBRDF(N, wo, wi, mat);
-            float misDenom = misCombineDenom(pdfLight, pdfBrdf);
-            if (misDenom < 1e-8f) {
+            float misW = misWeightPower(pdfLight, pdfLight, pdfBrdf);
+            if (misW < 1e-8f) {
                 return false;
             }
-            contrib += brdf * area->getColor() * cosO / misDenom;
+            contrib += brdf * area->getColor() * cosO / pdfLight * misW;
         } else {
             contrib += brdf * area->getColor() * cosO * cosL * lightArea / dist2;
         }
@@ -500,7 +508,7 @@ private:
     }
 
     Vector3f traceReflectChild(const Ray &ray, const Hit &hit, ReflectMaterial *mat, int depth,
-                               const Vector3f &throughput) const {
+                               const Vector3f &throughput, int dispChannel) const {
         Vector3f hitPoint = ray.pointAtParameter(hit.getT());
         Vector3f D = ray.getDirection().normalized();
         Vector3f N = faceNormal(D, hit.getNormal());
@@ -510,7 +518,8 @@ private:
             throughput[0] * mat->getReflectColor()[0],
             throughput[1] * mat->getReflectColor()[1],
             throughput[2] * mat->getReflectColor()[2]);
-        return clampRadiance(castRayPath(Ray(origin, reflected), depth + 1, newThroughput, true, nullptr));
+        return clampRadiance(castRayPath(Ray(origin, reflected), depth + 1, newThroughput, true,
+                                         nullptr, dispChannel));
     }
 
     static float channelIor(float baseIor, float delta, int channel) {
@@ -524,7 +533,7 @@ private:
     }
 
     Vector3f traceRefractChild(const Ray &ray, const Hit &hit, RefractMaterial *mat, int depth,
-                                const Vector3f &throughput) const {
+                                const Vector3f &throughput, int dispChannel) const {
         Vector3f hitPoint = ray.pointAtParameter(hit.getT());
         Vector3f D = ray.getDirection().normalized();
         Vector3f geomN = hit.getNormal().normalized();
@@ -532,25 +541,31 @@ private:
         float baseIor = mat->getRefractIndex();
         float delta = mat->getDispersionDelta();
 
-        if (dispersionEnabled && delta > 0.0f) {
+        if (dispersionEnabled && delta > 0.0f && dispChannel < 0) {
             Vector3f result = Vector3f::ZERO;
             for (int c = 0; c < 3; ++c) {
                 float ior = channelIor(baseIor, delta, c);
                 Vector3f newDir = computeRefractDirection(D, geomN, ior);
                 Vector3f origin = offsetAlongRay(hitPoint, newDir, REFRACT_ORIGIN_OFFSET);
-                Vector3f child = castRayPath(Ray(origin, newDir), depth + 1, throughput, true, nullptr);
+                Vector3f child = castRayPath(Ray(origin, newDir), depth + 1, throughput, true,
+                                               nullptr, c);
                 result[c] = child[c] * refractColor[c];
             }
             return clampRadiance(result);
         }
 
-        Vector3f newDir = computeRefractDirection(D, geomN, baseIor);
+        float ior = baseIor;
+        if (dispChannel >= 0 && delta > 0.0f) {
+            ior = channelIor(baseIor, delta, dispChannel);
+        }
+        Vector3f newDir = computeRefractDirection(D, geomN, ior);
         Vector3f origin = offsetAlongRay(hitPoint, newDir, REFRACT_ORIGIN_OFFSET);
         Vector3f newThroughput = Vector3f(
             throughput[0] * refractColor[0],
             throughput[1] * refractColor[1],
             throughput[2] * refractColor[2]);
-        return clampRadiance(castRayPath(Ray(origin, newDir), depth + 1, newThroughput, true, nullptr));
+        return clampRadiance(castRayPath(Ray(origin, newDir), depth + 1, newThroughput, true,
+                                         nullptr, dispChannel));
     }
 
     Vector3f castRayWhitted(const Ray &ray, int depth, float tmin) const {
@@ -617,7 +632,8 @@ private:
     }
 
     Vector3f castRayPath(const Ray &ray, int depth, const Vector3f &throughput,
-                         bool countEmissive, const MisIndirectCtx *misCtx = nullptr) const {
+                         bool countEmissive, const MisIndirectCtx *misCtx = nullptr,
+                         int dispChannel = -1) const {
         if (depth > MAX_TRACE_DEPTH) {
             return Vector3f::ZERO;
         }
@@ -639,13 +655,11 @@ private:
             Vector3f emission = mat->getEmission();
             if (misCtx != nullptr) {
                 float pdfLight = computeAreaLightPdf(misCtx->shadingPoint, misCtx->wi);
-                float misDenom = misCombineDenom(pdfLight, misCtx->pdfBrdf);
-                if (misDenom < 1e-8f) {
+                float misW = misWeightPower(misCtx->pdfBrdf, pdfLight, misCtx->pdfBrdf);
+                if (misW < 1e-8f) {
                     return Vector3f::ZERO;
                 }
-                float scale = misCtx->glossyMat != nullptr
-                                  ? (misCtx->pdfBrdf / misDenom)
-                                  : (1.0f / misDenom);
+                float scale = misW / misCtx->pdfBrdf;
                 return clampRadiance(Vector3f(
                     throughput[0] * emission[0] * scale,
                     throughput[1] * emission[1] * scale,
@@ -662,24 +676,26 @@ private:
         }
 
         if (mat->getType() == MaterialType::REFLECT) {
-            return traceReflectChild(ray, hit, static_cast<ReflectMaterial *>(mat), depth, throughput);
+            return traceReflectChild(ray, hit, static_cast<ReflectMaterial *>(mat), depth, throughput,
+                                     dispChannel);
         }
 
         if (mat->getType() == MaterialType::REFRACT) {
-            return traceRefractChild(ray, hit, static_cast<RefractMaterial *>(mat), depth, throughput);
+            return traceRefractChild(ray, hit, static_cast<RefractMaterial *>(mat), depth, throughput,
+                                     dispChannel);
         }
 
         if (mat->getType() == MaterialType::GLOSSY) {
             return shadeGlossyPath(hit, hitPoint, D, geomN, static_cast<GlossyMaterial *>(mat), depth,
-                                   throughput);
+                                   throughput, dispChannel);
         }
 
-        return shadeDiffusePath(hit, hitPoint, D, geomN, mat, depth, throughput);
+        return shadeDiffusePath(hit, hitPoint, D, geomN, mat, depth, throughput, dispChannel);
     }
 
     Vector3f shadeDiffusePath(const Hit &hit, const Vector3f &hitPoint, const Vector3f &D,
                               const Vector3f &geomN, Material *mat, int depth,
-                              const Vector3f &throughput) const {
+                              const Vector3f &throughput, int dispChannel) const {
         Vector3f N = mat->getShadingNormal(hit, -D);
         Vector3f albedo = mat->getShadedDiffuse(hit);
 
@@ -701,7 +717,6 @@ private:
             }
             if (traceIndirect) {
                 Vector3f origin = offsetAlongNormal(hitPoint, N, ORIGIN_OFFSET);
-                bool indirectEmissive = !useNEE() || useMIS();
                 MisIndirectCtx misCtx;
                 const MisIndirectCtx *misPtr = nullptr;
                 if (useMIS()) {
@@ -713,8 +728,8 @@ private:
                     misCtx.glossyMat = nullptr;
                     misPtr = &misCtx;
                 }
-                Vector3f Li = castRayPath(Ray(origin, wi), depth + 1, throughput, indirectEmissive,
-                                          misPtr);
+                Vector3f Li = castRayPath(Ray(origin, wi), depth + 1, throughput, true, misPtr,
+                                          dispChannel);
                 indirect = clampRadiance(Vector3f(
                     albedo[0] * Li[0],
                     albedo[1] * Li[1],
@@ -727,7 +742,7 @@ private:
 
     Vector3f shadeGlossyPath(const Hit &hit, const Vector3f &hitPoint, const Vector3f &D,
                              const Vector3f &geomN, GlossyMaterial *mat, int depth,
-                             const Vector3f &throughput) const {
+                             const Vector3f &throughput, int dispChannel) const {
         Vector3f wo = -D;
         Vector3f N = mat->getShadingNormal(hit, wo);
         Vector3f kd = mat->getShadedDiffuse(hit);
@@ -774,7 +789,6 @@ private:
             if (traceIndirect) {
                 float cosO = std::max(0.0f, Vector3f::dot(N, wi));
                 Vector3f origin = offsetAlongNormal(hitPoint, N, ORIGIN_OFFSET);
-                bool indirectEmissive = !useNEE() || useMIS();
                 MisIndirectCtx misCtx;
                 const MisIndirectCtx *misPtr = nullptr;
                 if (useMIS()) {
@@ -786,8 +800,8 @@ private:
                     misCtx.glossyMat = mat;
                     misPtr = &misCtx;
                 }
-                Vector3f Li = castRayPath(Ray(origin, wi), depth + 1, throughput, indirectEmissive,
-                                          misPtr);
+                Vector3f Li = castRayPath(Ray(origin, wi), depth + 1, throughput, true, misPtr,
+                                          dispChannel);
                 indirect = clampRadiance(brdf * cosO * Li / (pdf * rrProb));
             }
         }

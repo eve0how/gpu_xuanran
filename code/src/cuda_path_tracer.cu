@@ -391,6 +391,28 @@ __device__ float computeAreaLightPdf(const GpuSceneDevice &scene, float3 hitPoin
     return pdf;
 }
 
+__device__ float misPowerDenom(float pdfA, float pdfB) {
+    return pdfA * pdfA + pdfB * pdfB;
+}
+
+__device__ float misWeightPower(float pdf, float pdfA, float pdfB) {
+    float denom = misPowerDenom(pdfA, pdfB);
+    if (denom < 1e-8f) {
+        return 0.0f;
+    }
+    return pdf * pdf / denom;
+}
+
+__device__ float channelIor(float baseIor, float delta, int channel) {
+    if (channel == 0) {
+        return baseIor - delta;
+    }
+    if (channel == 2) {
+        return baseIor + delta;
+    }
+    return baseIor;
+}
+
 __device__ bool isSegmentOccluded(const GpuSceneDevice &scene, float3 from, float3 to, float3 N) {
     float3 dir = sub3(to, from);
     float dist = len3(dir);
@@ -456,11 +478,12 @@ __device__ bool sampleAreaLightDiffuse(const GpuSceneDevice &scene, const GpuAre
     if (useMis) {
         float pdfLight = dist2 / (lightArea * cosL);
         float pdfBrdf = pdfDiffuse(cosO);
-        float misDenom = pdfLight + pdfBrdf;
-        if (misDenom < 1e-8f) {
+        float misW = misWeightPower(pdfLight, pdfLight, pdfBrdf);
+        if (misW < 1e-8f) {
             return false;
         }
-        contrib = add3(contrib, mul3(mul3v(albedo, emission), cosO / (kPi * misDenom)));
+        contrib = add3(contrib,
+                        mul3(mul3v(albedo, emission), cosO / (kPi * pdfLight) * misW));
     } else {
         contrib = add3(contrib, mul3(mul3v(albedo, emission), cosO * cosL * lightArea / (kPi * dist2)));
     }
@@ -505,11 +528,11 @@ __device__ bool sampleAreaLightGlossy(const GpuSceneDevice &scene, const GpuArea
     if (useMis) {
         float pdfLight = dist2 / (lightArea * cosL);
         float pdfBrdf = pdfGlossy(N, wo, wi, mat);
-        float misDenom = pdfLight + pdfBrdf;
-        if (misDenom < 1e-8f) {
+        float misW = misWeightPower(pdfLight, pdfLight, pdfBrdf);
+        if (misW < 1e-8f) {
             return false;
         }
-        contrib = add3(contrib, mul3(mul3v(brdf, emission), cosO / misDenom));
+        contrib = add3(contrib, mul3(mul3v(brdf, emission), cosO / pdfLight * misW));
     } else {
         contrib = add3(contrib, mul3(mul3v(brdf, emission), cosO * cosL * lightArea / dist2));
     }
@@ -593,12 +616,14 @@ struct MisCtx {
 };
 
 __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 dir, int depth,
-                              float3 throughput, bool countEmissive, int mode, bool dispersion,
-                              const MisCtx *misCtx, curandState &rng);
+                              float3 throughput, bool countEmissive, int mode,
+                              bool dispersionEnabled, int dispChannel, const MisCtx *misCtx,
+                              curandState &rng);
 
 __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 dir, int depth,
-                              float3 throughput, bool countEmissive, int mode, bool dispersion,
-                              const MisCtx *misCtx, curandState &rng) {
+                              float3 throughput, bool countEmissive, int mode,
+                              bool dispersionEnabled, int dispChannel, const MisCtx *misCtx,
+                              curandState &rng) {
     if (depth > kMaxDepth) {
         return make3(0, 0, 0);
     }
@@ -620,12 +645,12 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
         float3 emission = load3(mat.emission);
         if (misCtx != nullptr && misCtx->active) {
             float pdfLight = computeAreaLightPdf(scene, misCtx->shadingPoint, misCtx->wi);
-            float misDenom = pdfLight + misCtx->pdfBrdf;
+            float misDenom = misPowerDenom(pdfLight, misCtx->pdfBrdf);
             if (misDenom < 1e-8f) {
                 return make3(0, 0, 0);
             }
-            // Diffuse parents apply albedo (== brdf*cos/pdf); glossy parents divide by pdfBrdf.
-            float scale = misCtx->glossyPath ? (misCtx->pdfBrdf / misDenom) : (1.0f / misDenom);
+            float misW = misWeightPower(misCtx->pdfBrdf, misCtx->pdfBrdf, pdfLight);
+            float scale = misW / misCtx->pdfBrdf;
             return clampRadiance3(mul3(mul3v(throughput, emission), scale));
         }
         return clampRadiance3(mul3v(throughput, emission));
@@ -645,22 +670,21 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
         float3 origin = offsetAlongNormal(hitPoint, N, kOriginOffset);
         float3 newTp = mul3v(throughput, load3(mat.specular));
         return clampRadiance3(castRayPath(scene, origin, reflected, depth + 1, newTp, true, mode,
-                                          dispersion, nullptr, rng));
+                                          dispersionEnabled, dispChannel, nullptr, rng));
     }
 
     if (mat.type == GPU_MAT_REFRACT) {
         float3 refractColor = load3(mat.specular);
-        if (dispersion && mat.dispersionDelta > 0.0f) {
-            float deltas[3] = {-mat.dispersionDelta, 0.0f, mat.dispersionDelta};
+        if (dispersionEnabled && mat.dispersionDelta > 0.0f && dispChannel < 0) {
             float rx = 0.0f;
             float gy = 0.0f;
             float bz = 0.0f;
             for (int c = 0; c < 3; ++c) {
-                float ior = mat.ior + deltas[c];
+                float ior = channelIor(mat.ior, mat.dispersionDelta, c);
                 float3 newDir = computeRefractDirection(D, geomN, ior);
                 float3 origin = offsetAlongRay(hitPoint, newDir, kRefractOriginOffset);
                 float3 child = castRayPath(scene, origin, newDir, depth + 1, throughput, true, mode,
-                                           false, nullptr, rng);
+                                           dispersionEnabled, c, nullptr, rng);
                 if (c == 0) {
                     rx = child.x * refractColor.x;
                 } else if (c == 1) {
@@ -671,11 +695,15 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
             }
             return clampRadiance3(make3(rx, gy, bz));
         }
-        float3 newDir = computeRefractDirection(D, geomN, mat.ior);
+        float ior = mat.ior;
+        if (dispChannel >= 0 && mat.dispersionDelta > 0.0f) {
+            ior = channelIor(mat.ior, mat.dispersionDelta, dispChannel);
+        }
+        float3 newDir = computeRefractDirection(D, geomN, ior);
         float3 origin = offsetAlongRay(hitPoint, newDir, kRefractOriginOffset);
         float3 newTp = mul3v(throughput, refractColor);
         return clampRadiance3(castRayPath(scene, origin, newDir, depth + 1, newTp, true, mode,
-                                          dispersion, nullptr, rng));
+                                          dispersionEnabled, dispChannel, nullptr, rng));
     }
 
     if (mat.type == GPU_MAT_GLOSSY) {
@@ -736,7 +764,7 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
             if (traceIndirect) {
                 float cosO = fmaxf(0.0f, dot3(N, wi));
                 float3 origin = offsetAlongNormal(hitPoint, N, kOriginOffset);
-                bool indirectEmissive = !useNee || useMis;
+                bool indirectEmissive = true;
                 MisCtx mis;
                 const MisCtx *misPtr = nullptr;
                 if (useMis) {
@@ -749,7 +777,7 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
                     misPtr = &mis;
                 }
                 float3 Li = castRayPath(scene, origin, wi, depth + 1, throughput, indirectEmissive,
-                                        mode, dispersion, misPtr, rng);
+                                        mode, dispersionEnabled, dispChannel, misPtr, rng);
                 indirect = clampRadiance3(mul3(mul3v(brdf, Li), cosO / (pdf * rrProb)));
             }
         }
@@ -776,7 +804,7 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
         }
         if (traceIndirect) {
             float3 origin = offsetAlongNormal(hitPoint, N, kOriginOffset);
-            bool indirectEmissive = !useNee || useMis;
+            bool indirectEmissive = true;
             MisCtx mis;
             const MisCtx *misPtr = nullptr;
             if (useMis) {
@@ -789,7 +817,7 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
                 misPtr = &mis;
             }
             float3 Li = castRayPath(scene, origin, wi, depth + 1, throughput, indirectEmissive, mode,
-                                    dispersion, misPtr, rng);
+                                    dispersionEnabled, dispChannel, misPtr, rng);
             indirect = clampRadiance3(mul3(mul3v(albedo, Li), 1.0f / rrProb));
         }
     }
@@ -963,8 +991,8 @@ __global__ void renderKernel(const GpuSceneDevice scene, float *output, curandSt
         if (mode == GPU_WHITTED) {
             sampleColor = castRayWhitted(scene, orig, dir, 0, kRayEps, localState);
         } else {
-            sampleColor = castRayPath(scene, orig, dir, 0, make3(1, 1, 1), true, mode, dispersion,
-                                      nullptr, localState);
+            sampleColor = castRayPath(scene, orig, dir, 0, make3(1, 1, 1), true, mode,
+                                      dispersion, -1, nullptr, localState);
         }
         accum = add3(accum, sampleColor);
     }
@@ -1176,9 +1204,9 @@ bool renderWithCuda(const SceneParser &scene, Image &image, RenderMode mode, int
 
     GpuSceneDevice sceneDev = g_device.scene;
     auto t0 = std::chrono::high_resolution_clock::now();
-    unsigned long long seed = static_cast<unsigned long long>(
-        std::chrono::high_resolution_clock::now().time_since_epoch().count());
-    initCurandKernel<<<grid, block>>>(g_device.rngStates, width, height, seed);
+    // Deterministic seed so feature flags (dispersion, MIS) produce comparable images.
+    constexpr unsigned long long kCudaRenderSeed = 104729ULL;
+    initCurandKernel<<<grid, block>>>(g_device.rngStates, width, height, kCudaRenderSeed);
     cudaError_t initErr = cudaGetLastError();
     if (initErr != cudaSuccess) {
         fprintf(stderr, "CUDA curand init error: %s\n", cudaGetErrorString(initErr));
