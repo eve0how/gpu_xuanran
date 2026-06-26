@@ -8,7 +8,7 @@
 bool cudaAvailable();
 
 bool renderWithCuda(const SceneParser &scene, Image &image, RenderMode mode, int spp,
-                    bool dispersion, double &renderSec);
+                    bool dispersion, double &renderSec, int trainSpp = 0);
 
 void freeCudaSceneCache();
 

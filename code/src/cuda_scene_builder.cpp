@@ -12,6 +12,8 @@
 
 #include <unordered_map>
 #include <vector>
+#include <algorithm>
+#include <cmath>
 
 static void toGpuVec3(const Vector3f &v, float out[3]) {
     out[0] = v[0];
@@ -40,7 +42,10 @@ public:
                      std::vector<GpuAreaLight> &outAreaLights,
                      std::vector<GpuPointLight> &outPointLights,
                      std::vector<GpuDirectionalLight> &outDirectionalLights,
-                     GpuCamera &outCamera) {
+                     GpuCamera &outCamera,
+                     float outBboxMin[3],
+                     float outBboxMax[3],
+                     bool &outHasBbox) {
         materials = &outMaterials;
         spheres = &outSpheres;
         planes = &outPlanes;
@@ -63,6 +68,22 @@ public:
         buildLights();
         buildCamera();
         flattenObject(scene.getGroup(), Matrix4f::identity());
+
+        if (hasBbox) {
+            Vector3f extent = bboxMax - bboxMin;
+            float pad = std::max(0.05f, 0.05f * extent.length());
+            bboxMin -= Vector3f(pad, pad, pad);
+            bboxMax += Vector3f(pad, pad, pad);
+            outBboxMin[0] = bboxMin.x();
+            outBboxMin[1] = bboxMin.y();
+            outBboxMin[2] = bboxMin.z();
+            outBboxMax[0] = bboxMax.x();
+            outBboxMax[1] = bboxMax.y();
+            outBboxMax[2] = bboxMax.z();
+            outHasBbox = true;
+        } else {
+            outHasBbox = false;
+        }
     }
 
 private:
@@ -76,6 +97,25 @@ private:
     std::vector<GpuPointLight> *pointLights = nullptr;
     std::vector<GpuDirectionalLight> *directionalLights = nullptr;
     GpuCamera *camera = nullptr;
+    Vector3f bboxMin{1e30f, 1e30f, 1e30f};
+    Vector3f bboxMax{-1e30f, -1e30f, -1e30f};
+    bool hasBbox = false;
+
+    void expandBbox(const Vector3f &p) {
+        hasBbox = true;
+        bboxMin.x() = std::min(bboxMin.x(), p.x());
+        bboxMin.y() = std::min(bboxMin.y(), p.y());
+        bboxMin.z() = std::min(bboxMin.z(), p.z());
+        bboxMax.x() = std::max(bboxMax.x(), p.x());
+        bboxMax.y() = std::max(bboxMax.y(), p.y());
+        bboxMax.z() = std::max(bboxMax.z(), p.z());
+    }
+
+    void expandBboxTriangle(const Vector3f &a, const Vector3f &b, const Vector3f &c) {
+        expandBbox(a);
+        expandBbox(b);
+        expandBbox(c);
+    }
 
     void buildMaterialMap() {
         for (int i = 0; i < scene.getNumMaterials(); ++i) {
@@ -147,6 +187,7 @@ private:
                 toGpuVec3(area->getVertex2(), g.v2);
                 toGpuVec3(area->getColor(), g.color);
                 areaLights->push_back(g);
+                expandBboxTriangle(area->getVertex0(), area->getVertex1(), area->getVertex2());
             } else if (auto *point = dynamic_cast<PointLight *>(scene.getLight(i))) {
                 GpuPointLight g{};
                 toGpuVec3(point->getPosition(), g.pos);
@@ -212,6 +253,9 @@ private:
             g.radius = sphere->getRadius() * uniformScaleFactor(world);
             g.matId = matIdFor(sphere->getMaterial());
             spheres->push_back(g);
+            float r = g.radius;
+            expandBbox(c + Vector3f(r, r, r));
+            expandBbox(c - Vector3f(r, r, r));
             return;
         }
         if (auto *plane = dynamic_cast<Plane *>(obj)) {
@@ -222,21 +266,35 @@ private:
             g.offset = Vector3f::dot(n, p);
             g.matId = matIdFor(plane->getMaterial());
             planes->push_back(g);
+            // Large finite slab for plane bbox (Cornell walls).
+            Vector3f absN(fabsf(n.x()), fabsf(n.y()), fabsf(n.z()));
+            if (absN.y() > 0.9f) {
+                expandBbox(Vector3f(-2.0f, p.y(), -2.0f));
+                expandBbox(Vector3f(2.0f, p.y(), 2.0f));
+            } else if (absN.x() > 0.9f) {
+                expandBbox(Vector3f(p.x(), -2.0f, -2.0f));
+                expandBbox(Vector3f(p.x(), 2.0f, 2.0f));
+            } else {
+                expandBbox(Vector3f(-2.0f, -2.0f, p.z()));
+                expandBbox(Vector3f(2.0f, 2.0f, p.z()));
+            }
             return;
         }
         if (auto *tri = dynamic_cast<Triangle *>(obj)) {
-            addTriangle(transformPointMat(world, tri->vertices[0]),
-                        transformPointMat(world, tri->vertices[1]),
-                        transformPointMat(world, tri->vertices[2]),
-                        tri->getMaterial());
+            Vector3f a = transformPointMat(world, tri->vertices[0]);
+            Vector3f b = transformPointMat(world, tri->vertices[1]);
+            Vector3f c = transformPointMat(world, tri->vertices[2]);
+            addTriangle(a, b, c, tri->getMaterial());
+            expandBboxTriangle(a, b, c);
             return;
         }
         if (auto *mesh = dynamic_cast<Mesh *>(obj)) {
             for (const auto &idx : mesh->t) {
-                addTriangle(transformPointMat(world, mesh->v[idx.x[0]]),
-                            transformPointMat(world, mesh->v[idx.x[1]]),
-                            transformPointMat(world, mesh->v[idx.x[2]]),
-                            mesh->getMaterial());
+                Vector3f a = transformPointMat(world, mesh->v[idx.x[0]]);
+                Vector3f b = transformPointMat(world, mesh->v[idx.x[1]]);
+                Vector3f c = transformPointMat(world, mesh->v[idx.x[2]]);
+                addTriangle(a, b, c, mesh->getMaterial());
+                expandBboxTriangle(a, b, c);
             }
         }
     }
@@ -252,11 +310,11 @@ GpuSceneHost buildGpuSceneHost(const SceneParser &scene) {
     static std::vector<GpuDirectionalLight> directionalLights;
     static GpuCamera camera{};
 
+    GpuSceneHost host{};
     SceneFlattener flattener(scene);
     flattener.flattenInto(materials, spheres, planes, triangles, areaLights, pointLights,
-                          directionalLights, camera);
+                          directionalLights, camera, host.bboxMin, host.bboxMax, host.hasBbox);
 
-    GpuSceneHost host{};
     host.numMaterials = static_cast<int>(materials.size());
     host.materials = materials.empty() ? nullptr : materials.data();
     host.numSpheres = static_cast<int>(spheres.size());

@@ -27,7 +27,8 @@ enum class RenderMode {
     WHITTED,
     PATH_TRACE,
     PATH_TRACE_NEE,
-    PATH_TRACE_MIS
+    PATH_TRACE_MIS,
+    PATH_TRACE_GUIDING
 };
 
 struct MisIndirectCtx {
@@ -746,7 +747,7 @@ private:
                     misCtx.glossyMat = nullptr;
                     misPtr = &misCtx;
                 }
-                bool indirectEmissive = true;
+                bool indirectEmissive = !useNEE() || useMIS();
                 Vector3f Li = castRayPath(Ray(origin, wi), depth + 1, throughput, indirectEmissive,
                                           misPtr, dispChannel);
                 indirect = clampRadiance(Vector3f(
@@ -819,7 +820,7 @@ private:
                     misCtx.glossyMat = mat;
                     misPtr = &misCtx;
                 }
-                bool indirectEmissive = true;
+                bool indirectEmissive = !useNEE() || useMIS();
                 Vector3f Li = castRayPath(Ray(origin, wi), depth + 1, throughput, indirectEmissive,
                                           misPtr, dispChannel);
                 indirect = clampRadiance(brdf * cosO * Li / (pdf * rrProb));

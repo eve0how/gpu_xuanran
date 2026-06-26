@@ -1,0 +1,139 @@
+
+PerspectiveCamera {
+    center 0 0.92 0.85
+    direction 0 -0.06 -1
+    up 0 1 0
+    angle 36
+    width 1024
+    height 1024
+}
+
+Lights {
+    numLights 2
+    AreaLight {
+        vertex0 -0.05 0.45 -0.998
+        vertex1 0.05 0.45 -0.998
+        vertex2 0.05 1.55 -0.998
+        color 28 28 26
+    }
+    AreaLight {
+        vertex0 -0.05 0.45 -0.998
+        vertex1 0.05 1.55 -0.998
+        vertex2 -0.05 1.55 -0.998
+        color 28 28 26
+    }
+}
+
+Background {
+    color 0 0 0
+}
+
+Materials {
+    numMaterials 4
+    Material {
+        diffuseColor 0.07 0.07 0.08
+    }
+    Material {
+        diffuseColor 0.12 0.11 0.10
+    }
+    EmissiveMaterial {
+        emission 28 28 26
+    }
+    Material {
+        diffuseColor 0.72 0.68 0.58
+    }
+}
+
+Group {
+    numObjects 16
+    MaterialIndex 1
+    Plane {
+        normal 0 1 0
+        offset 0
+    }
+    MaterialIndex 0
+    Plane {
+        normal 0 -1 0
+        offset -2
+    }
+    MaterialIndex 0
+    Plane {
+        normal 1 0 0
+        offset -1
+    }
+    MaterialIndex 0
+    Plane {
+        normal -1 0 0
+        offset -1
+    }
+    MaterialIndex 0
+    Plane {
+        normal 0 0 -1
+        offset 1
+    }
+    MaterialIndex 0
+    Triangle {
+        vertex0 -1.0 1.55 -0.998
+        vertex1 -0.05 1.55 -0.998
+        vertex2 -0.05 2.0 -0.998
+    }
+    MaterialIndex 0
+    Triangle {
+        vertex0 -1.0 1.55 -0.998
+        vertex1 -0.05 2.0 -0.998
+        vertex2 -1.0 2.0 -0.998
+    }
+    MaterialIndex 0
+    Triangle {
+        vertex0 -1.0 0.0 -0.998
+        vertex1 -0.05 0.0 -0.998
+        vertex2 -0.05 0.45 -0.998
+    }
+    MaterialIndex 0
+    Triangle {
+        vertex0 -1.0 0.0 -0.998
+        vertex1 -0.05 0.45 -0.998
+        vertex2 -1.0 0.45 -0.998
+    }
+    MaterialIndex 0
+    Triangle {
+        vertex0 0.05 1.55 -0.998
+        vertex1 1.0 1.55 -0.998
+        vertex2 1.0 2.0 -0.998
+    }
+    MaterialIndex 0
+    Triangle {
+        vertex0 0.05 1.55 -0.998
+        vertex1 1.0 2.0 -0.998
+        vertex2 0.05 2.0 -0.998
+    }
+    MaterialIndex 0
+    Triangle {
+        vertex0 0.05 0.0 -0.998
+        vertex1 1.0 0.0 -0.998
+        vertex2 1.0 0.45 -0.998
+    }
+    MaterialIndex 0
+    Triangle {
+        vertex0 0.05 0.0 -0.998
+        vertex1 1.0 0.45 -0.998
+        vertex2 0.05 0.45 -0.998
+    }
+    MaterialIndex 2
+    Triangle {
+        vertex0 -0.05 0.45 -0.998
+        vertex1 0.05 0.45 -0.998
+        vertex2 0.05 1.55 -0.998
+    }
+    MaterialIndex 2
+    Triangle {
+        vertex0 -0.05 0.45 -0.998
+        vertex1 0.05 1.55 -0.998
+        vertex2 -0.05 1.55 -0.998
+    }
+    MaterialIndex 3
+    Sphere {
+        center 0 0.32 -0.38
+        radius 0.28
+    }
+}

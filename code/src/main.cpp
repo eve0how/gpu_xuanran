@@ -33,6 +33,9 @@ static float hash01(int a, int b, int c) {
 }
 
 static RenderMode parseMode(const string &modeStr) {
+    if (modeStr == "path_guiding" || modeStr == "pathguiding" || modeStr == "guiding") {
+        return RenderMode::PATH_TRACE_GUIDING;
+    }
     if (modeStr == "path_mis" || modeStr == "pathmis") {
         return RenderMode::PATH_TRACE_MIS;
     }
@@ -72,16 +75,32 @@ static bool parseCudaFlag(int argc, char *argv[]) {
            parseFlag(argc, argv, "gpu", "--gpu");
 }
 
+static int parseTrainSppFlag(int argc, char *argv[]) {
+    for (int i = 3; i < argc; ++i) {
+        if (strcmp(argv[i], "train_spp") == 0 || strcmp(argv[i], "--train-spp") == 0) {
+            if (i + 1 < argc) {
+                int v = atoi(argv[i + 1]);
+                return v > 0 ? v : 0;
+            }
+        }
+    }
+    return 0;
+}
+
 static bool isOptionToken(const char *arg) {
     return strcmp(arg, "gamma") == 0 || strcmp(arg, "--gamma") == 0 ||
            strcmp(arg, "omp") == 0 || strcmp(arg, "--omp") == 0 ||
            strcmp(arg, "parallel") == 0 || strcmp(arg, "--parallel") == 0 ||
            strcmp(arg, "dispersion") == 0 || strcmp(arg, "--dispersion") == 0 ||
            strcmp(arg, "cuda") == 0 || strcmp(arg, "--cuda") == 0 ||
-           strcmp(arg, "gpu") == 0 || strcmp(arg, "--gpu") == 0;
+           strcmp(arg, "gpu") == 0 || strcmp(arg, "--gpu") == 0 ||
+           strcmp(arg, "train_spp") == 0 || strcmp(arg, "--train-spp") == 0;
 }
 
 static const char *modeName(RenderMode mode) {
+    if (mode == RenderMode::PATH_TRACE_GUIDING) {
+        return "path_guiding";
+    }
     if (mode == RenderMode::PATH_TRACE_MIS) {
         return "path_mis";
     }
@@ -100,7 +119,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (argc < 3) {
-        cout << "Usage: ./PA1-2 <scene file> <output bmp> [whitted|path|path_nee|path_mis] [spp] [gamma] [omp|parallel] [dispersion] [cuda|gpu]" << endl;
+        cout << "Usage: ./PA1-2 <scene file> <output bmp> [whitted|path|path_nee|path_mis|path_guiding] [spp] [gamma] [omp|parallel] [dispersion] [cuda|gpu] [train_spp N]" << endl;
         return 1;
     }
 
@@ -116,13 +135,14 @@ int main(int argc, char *argv[]) {
     bool useOmp = parseOmpFlag(argc, argv);
     bool useDispersion = parseDispersionFlag(argc, argv);
     bool useCuda = parseCudaFlag(argc, argv);
+    int trainSpp = parseTrainSppFlag(argc, argv);
     if (argc >= 5 && !isOptionToken(argv[4])) {
         spp = atoi(argv[4]);
         if (spp < 1) {
             spp = 1;
         }
     } else if (mode == RenderMode::PATH_TRACE || mode == RenderMode::PATH_TRACE_NEE ||
-               mode == RenderMode::PATH_TRACE_MIS) {
+               mode == RenderMode::PATH_TRACE_MIS || mode == RenderMode::PATH_TRACE_GUIDING) {
         spp = 64;
     }
 
@@ -135,6 +155,9 @@ int main(int argc, char *argv[]) {
          << ", omp: " << (useOmp ? "on" : "off")
          << ", dispersion: " << (useDispersion ? "on" : "off")
          << ", cuda: " << (useCuda ? "on" : "off");
+    if (mode == RenderMode::PATH_TRACE_GUIDING && trainSpp > 0) {
+        cout << ", train_spp: " << trainSpp;
+    }
 #ifdef _OPENMP
     if (useOmp) {
         cout << " (" << omp_get_max_threads() << " threads)";
@@ -152,17 +175,29 @@ int main(int argc, char *argv[]) {
 
 #ifdef USE_CUDA
     if (useCuda) {
+        if (mode == RenderMode::PATH_TRACE_GUIDING) {
+            cout << "Path guiding requires CUDA; training+render on GPU." << endl;
+        }
         double cudaSec = 0.0;
-        if (renderWithCuda(scene, dImg, mode, spp, useDispersion, cudaSec)) {
+        if (renderWithCuda(scene, dImg, mode, spp, useDispersion, cudaSec, trainSpp)) {
             cout << "Render time: " << cudaSec << " s (CUDA)" << endl;
             dImg.SaveBMP(outputFile.c_str(), applyGamma);
             cout << "Hello! Computer Graphics!" << endl;
             return 0;
         }
         cout << "CUDA rendering unavailable or failed; falling back to CPU." << endl;
+        if (mode == RenderMode::PATH_TRACE_GUIDING) {
+            cout << "path_guiding is GPU-only; use cuda flag." << endl;
+            return 1;
+        }
         useCuda = false;
     }
 #endif
+
+    if (mode == RenderMode::PATH_TRACE_GUIDING) {
+        cout << "path_guiding requires CUDA. Rebuild with USE_CUDA and pass cuda flag." << endl;
+        return 1;
+    }
 
     const bool showProgress = mode == RenderMode::PATH_TRACE || mode == RenderMode::PATH_TRACE_NEE ||
                               mode == RenderMode::PATH_TRACE_MIS;

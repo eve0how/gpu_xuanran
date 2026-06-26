@@ -15,7 +15,25 @@ enum GpuRenderMode : int {
     GPU_WHITTED = 0,
     GPU_PATH = 1,
     GPU_PATH_NEE = 2,
-    GPU_PATH_MIS = 3
+    GPU_PATH_MIS = 3,
+    GPU_PATH_GUIDING = 4
+};
+
+// Practical path guiding: 3D grid over scene AABB, lat-long directional histogram per cell.
+constexpr int kGuideGridRes = 16;
+constexpr int kGuideThetaBins = 16;
+constexpr int kGuidePhiBins = 16;
+constexpr int kGuideBinsPerCell = kGuideThetaBins * kGuidePhiBins;
+constexpr int kGuideNumCells = kGuideGridRes * kGuideGridRes * kGuideGridRes;
+
+struct GpuGuidingGrid {
+    float bboxMin[3];
+    float bboxMax[3];
+    int res;
+    int thetaBins;
+    int phiBins;
+    int binsPerCell;
+    float *weights;
 };
 
 struct GpuVec3 {
@@ -95,6 +113,9 @@ struct GpuSceneHost {
     GpuDirectionalLight *directionalLights = nullptr;
     int numDirectionalLights = 0;
     GpuCamera camera{};
+    float bboxMin[3]{};
+    float bboxMax[3]{};
+    bool hasBbox = false;
 };
 
 #endif
