@@ -35,8 +35,8 @@ public:
         Ray tr(trSource, trDirection);
         bool inter = o->intersect(tr, h, tmin);
         if (inter) {
-            h.set(h.getT(), h.getMaterial(),
-                  transformDirection(transform.transposed(), h.getNormal()).normalized());
+            // Only update normal/TBN; h.set() would clear interpolated UV from mesh hits.
+            h.setNormal(transformDirection(transform.transposed(), h.getNormal()).normalized());
             if (h.hasTangentFrame()) {
                 h.setTBN(transformDirection(transform, h.getTangent()).normalized(),
                          transformDirection(transform, h.getBitangent()).normalized());

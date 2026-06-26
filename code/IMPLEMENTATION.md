@@ -2267,8 +2267,37 @@ GPU cuda = 场景拍扁 → cudaMemcpy 上传 → 一线程一像素 renderKerne
 | **思路** | `Texture::loadBMP`；`Material::getShadedDiffuse` 乘 `texture->sample(u,v)`；`getShadingNormal` 用法线贴图 TBN。 |
 | **代码文件** | `src/texture.cpp`；`include/texture.hpp`；`src/scene_parser.cpp`（`texture`/`normalMap` token） |
 | **关键函数** | `Texture::sample()`；`Texture::sampleNormal()`；`Material::getShadingNormal()` |
-| **作用** | 场景 `scene_texture.txt`、`scene_texture_mesh.txt`；工具 `gen_textures` 生成砖/木/石 BMP。 |
-| **答辩话术** | 「纹理在材质 parse 时加载 BMP，hit 带 texcoord 时在 shading 阶段采样；GPU 路径当前未传纹理（扁平化仅材质常数）。**CPU 支持完整纹理。**」 |
+| **作用** | 场景 `scene_texture.txt`、`scene_texture_mesh.txt`、**`scene_texture_cornell*.txt`**；工具 `gen_textures` 生成灰泥/大理石/砖/木/石 BMP。 |
+| **答辩话术** | 「纹理在材质 parse 时加载 BMP，hit 带 texcoord 时在 shading 阶段采样；Mesh 从 OBJ 读 `vt`/`vn` 并在命中点插值 UV 与平滑法线；`Transform` 只更新法线/TBN、保留 UV。**GPU 扁平化未传纹理，请用 CPU `whitted`/`path_nee` 验收。**」 |
+
+**加分验收（Cornell 纹理展示）**
+
+```bash
+cd code
+./build/gen_textures
+./build/PA1-2 testcases/scene_texture_cornell_notex.txt output/texture_cornell_notex.bmp whitted 1 gamma
+./build/PA1-2 testcases/scene_texture_cornell.txt output/texture_cornell.bmp whitted 1 gamma
+./build/PA1-2 testcases/scene_texture_cornell_normal.txt output/texture_cornell_normal.bmp whitted 1 gamma
+python3 scripts/make_texture_showcase.py
+```
+
+| 验收图 | 场景 | 要点 |
+|---|---|---|
+| **`output/texture_showcase.png`** | 三图拼接 | **提交用单图**：A 纯色 Cornell / B 灰泥后墙+大理石球 / C 法线贴图后墙 |
+| `output/texture_cornell.bmp` | `scene_texture_cornell.txt` | 后墙灰泥 albedo（mesh UV）+ 中心球大理石（球面 UV） |
+| `output/texture_cornell_normal.bmp` | `scene_texture_cornell_normal.txt` | 后墙 `plaster_normal.bmp`  subtle bump |
+| `output/texture_cornell_notex.bmp` | `scene_texture_cornell_notex.txt` | 对照：经典 Cornell 纯色 |
+
+详见 `TEXTURE_README.txt`。
+
+**曾出现的问题与修复**
+
+| 问题 | 原因 | 修复 |
+|---|---|---|
+| 贴图不显示 / 变换后丢失 | `Transform::intersect` 调用 `Hit::set()` 会清空 `hasUv` | 改为 `setNormal()`，保留子物体插值 UV |
+| `gen_textures` 在 Release 下崩溃 | `-O3` 下 `unsigned char` 负值转换未定义行为 | `clampByte()` + `gen_textures` 目标使用 `-O2` |
+| 纹理文件缺失 | 未运行生成工具 | `mkdir -p textures && ./build/gen_textures` |
+| GPU 无纹理 | `SceneFlattener` 只上传材质常数 | 文档标明 CPU 路径验收；勿加 `cuda` 标志 |
 
 ---
 
@@ -2296,7 +2325,9 @@ GPU cuda = 场景拍扁 → cudaMemcpy 上传 → 一线程一像素 renderKerne
 | `scene08_path.txt` / `scene08_whitted.txt` | 综合对比 |
 | `scene_dispersion.txt` | 与 `scene_prism.txt` 等价别名 |
 | `scene_showcase.txt` | 色散 + MIS 叠加展示 |
-| `scene_texture_mesh.txt` | 纹理 + 法线贴图 mesh |
+| `scene_texture.txt` | 平面棋盘格纹理 |
+| `scene_texture_mesh.txt` | 砖/木/石 mesh 纹理 |
+| `scene_texture_cornell*.txt` | **加分**：经典 Cornell + 灰泥后墙 + 大理石球 + 法线贴图（见 `TEXTURE_README.txt`） |
 
 ---
 

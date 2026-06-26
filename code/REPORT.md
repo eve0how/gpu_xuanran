@@ -19,7 +19,8 @@
 | **4.1 对比实验** | ✅ 完成 | `path` vs `path_nee` 同场景同 SPP 对比 |
 | **5.5 Gamma 校正（bonus）** | ✅ 完成 | BMP 保存前可选 `color^(1/2.2)` 编码，CLI `gamma` 开关 |
 | **5.6 OpenMP 并行（bonus）** | ✅ 完成 | 按扫描行 `#pragma omp parallel for`，CLI `omp` 开关，输出耗时 |
-| **5.8 纹理贴图（bonus）** | ✅ 完成 | 材质可选 `texture` 路径，平面/球体/网格 UV，Whitted/Path 漫反射调制 |
+| **5.8 纹理与法线贴图（bonus）** | ✅ 完成 | BMP albedo + normalMap；Cornell 三面板展示（`scene_texture_cornell*.txt`） |
+| **Path Guiding（bonus）** | ✅ 完成 | CUDA 两趟简化 Practical Path Guiding + NEE；CLI `path_guiding` / `train_spp` |
 
 ---
 
@@ -58,6 +59,20 @@ $$
 
 `path` 模式不启用 NEE，仅靠随机弹射间接命中发光体，方差大、收敛慢。
 
+### 3.5 路径引导（Path Guiding）
+
+**动机**：NEE 已稳定估计直接光，但 **间接光** 仍靠余弦半球随机弹射。在遮挡阴影、窄缝漏光、多次反弹才能照亮的区域，随机方向很难命中「亮墙 / 光源方向」，方差大、同 SPP 下颗粒粗。
+
+**思路**（相对 Müller 等完整 SD-tree 的 **课程友好简化版**）：在场景 AABB 上建 **3D 均匀网格**（`8³`），每格维护 **lat-long 方向直方图**（`16×16` θ–φ bin）。训练趟从相机路径与 **light tracing**（从面光源反向追踪）沉积「哪些方向带来亮辐射」；渲染趟在间接采样时 **50% 余弦 BRDF / 50% 引导分布**，用 **Balance MIS** 合并 pdf，保持无偏、只降方差。
+
+**与 `path_nee` 的分**：直接光仍走 NEE；根路径与间接子路径 `countEmissive=false`，避免与 NEE 双重计光。期望亮度与 `path_nee` 接近（验收全图比 ≈ 1.0–1.05），差异主要在 **间接难采样区** 的噪声。
+
+### 3.6 纹理与法线贴图
+
+**动机**：在漫反射 albedo 上叠加 **空间变化**（灰泥墙、大理石球），并用 **法线贴图** 在 Whitted 点光下产生 subtle bump，无需增加几何细分。
+
+**思路**：材质解析时加载 24-bit BMP；命中点插值 UV，着色阶段 `albedo = diffuseColor × texture(uv)`。法线贴图在 **切线空间** 扰动法线：`N' = normalize(TBN · mapNormal(uv))`，再参与 Phong / 路径 BRDF。纹理管线 **仅在 CPU**（Whitted / `path` / `path_nee`）；CUDA 扁平化材质不传贴图。
+
 ---
 
 ## 4. 代码逻辑
@@ -66,7 +81,10 @@ $$
 |------|------|
 | `include/raytracer.hpp` | Whitted / Path / Path+NEE 三种模式；RR、NEE、光泽采样 |
 | `include/material.hpp` | Material、Reflect、Refract、Emissive、GlossyMaterial、CookTorranceBRDF；可选纹理 |
-| `include/texture.hpp` | BMP 纹理加载与 UV 采样（repeat） |
+| `include/texture.hpp` | BMP 纹理加载与 UV 采样（repeat）；法线贴图 `sampleNormal` |
+| `src/texture.cpp` | `loadBMP`、程序化 `gen_textures`（plaster/marble 等） |
+| `include/cuda_types.h` | GPU 结构体；`GpuGuidingGrid`（`8³` 网格 + `16×16` 方向 bin） |
+| `src/cuda_path_tracer.cu` | CUDA 路径追踪；`trainGuideKernel` / `renderKernel` / 引导 MIS |
 | `include/light.hpp` | PointLight、DirectionalLight、AreaLight |
 | `src/scene_parser.cpp` | 解析材质别名、AreaLight、GlossyMaterial |
 | `src/main.cpp` | CLI：`[whitted\|path\|path_nee] [spp] [gamma] [omp]`，默认 path 模式 SPP=64，默认串行渲染 |
@@ -167,35 +185,179 @@ Whitted 快速自检（`scene_whitted.txt`，SPP=1）：串行 2.24 s → 并行
 
 `main.cpp` 在 **SPP > 1** 时已对子样本做 **抖动**：`jx += hash01(x,y,s)`，`jy += hash01(y,x,s+31)`，即每像素内随机偏移采样点，等价于盒式滤波抗锯齿。Whitted 默认 SPP=1 无 AA；路径模式默认 SPP=64 已含抖动。无需额外 CLI，提高 SPP 即可加强 AA。
 
-### 5.8 纹理贴图（bonus）
+### 5.8 纹理与法线贴图（bonus）
 
-在漫反射材质上可选加载 **24-bit BMP 纹理**，着色时用 `diffuseColor × texture(uv)` 调制 albedo（未指定 `texture` 时行为与原来完全一致）。
+在漫反射 / 光泽材质上可选加载 **24-bit BMP 纹理** 与 **法线贴图**，着色时用 `diffuseColor × texture(uv)` 调制 albedo；有法线贴图时用 TBN 变换扰动着色法线（未指定时行为与原来完全一致）。
+
+#### 5.8.1 实现原理
+
+| 环节 | 说明 | 代码位置 |
+|------|------|----------|
+| **加载** | `Texture::loadBMP` 读 24-bit BMP，像素存 `[0,1]³` | `src/texture.cpp`、`include/texture.hpp` |
+| **Albedo 采样** | `Material::getShadedDiffuse(hit)`：`diffuseColor × texture->sample(u,v)`，UV repeat（`frac`） | `include/material.hpp` |
+| **法线贴图** | `sampleNormal` 将 RGB 映射到 `[-1,1]³`；`getShadingNormal` 用 `hit` 的 TBN 变到世界空间 | `include/material.hpp` |
+| **场景语法** | `texture textures/xxx.bmp`；`normalMap textures/yyy.bmp`（可单独或组合） | `src/scene_parser.cpp` |
+| **Whitted 着色** | `shadeDiffuse` / `shadeGlossyWhitted` 走 `getShadingNormal` + `getShadedDiffuse` | `include/raytracer.hpp` |
+| **路径着色** | `shadeDiffusePath` / `shadeGlossyPath` 同样调用上述接口 | 同上 |
 
 **UV 映射**：
 
 | 几何体 | UV 计算 |
 |--------|---------|
-| **Plane** | 在平面切线空间中取交点坐标，按 2× 平铺后 `frac` 重复 |
+| **Plane** | 交点在平面切线空间坐标，×2 平铺后 `frac` 重复；同时写入 TBN |
 | **Sphere** | 球面坐标：`u = 0.5 + atan2(z,x)/(2π)`，`v = 0.5 - asin(y/r)/π` |
-| **TriangleMesh** | 解析 obj 的 `vt`，命中三角形时用重心坐标插值 UV |
+| **TriangleMesh** | OBJ 的 `vt`/`vn`，命中时用重心坐标插值 UV 与平滑法线；`Transform` 只更新法线/TBN、**保留 UV** |
 
-场景语法（在 `Material` 或 `GlossyMaterial` 块内）：
+**CPU-only 限制**：`SceneFlattener`（`cuda_scene_builder.cpp`）只上传材质常数 `diffuse[]`，不传 BMP。纹理验收请用 **Whitted 或 CPU 路径**（**勿加** `cuda` / `gpu`）。
+
+#### 5.8.2 程序化纹理（`gen_textures`）
+
+工具 `build/gen_textures` 调用 `Texture::generateShowcaseTextures`，生成 Cornell 展示所需贴图：
+
+| 文件 | 生成函数 | 用途 |
+|------|----------|------|
+| `textures/plaster_albedo.bmp` | `writePlasterAlbedoBMP` | 灰泥墙 albedo（柔和米白、低频噪声） |
+| `textures/plaster_normal.bmp` | `writePlasterNormalBMP` | 灰泥 bump 法线（由高度场求导，**Panel C 加强 bump**） |
+| `textures/marble_albedo.bmp` | `writeMarbleAlbedoBMP` | 中心球大理石（蓝灰脉纹） |
+
+另有砖/木/石/地球等 legacy demo 贴图。`gen_textures` 目标使用 `-O2` 编译，避免 Release `-O3` 下 `unsigned char` 负值转换 UB。
+
+#### 5.8.3 Cornell 三面板展示
+
+基于经典 Cornell 盒（`scene_whitted.txt` 布局）：红/绿侧墙、灰地板/顶；**后墙** 用 `mesh/cornell_back_wall.obj`（带 UV）；**中心球** 材质 4 贴大理石 albedo（球面 UV）；其余球与玻璃立方体不变。
+
+| 面板 | 场景 | 后墙材质 | 说明 |
+|------|------|----------|------|
+| **A** | `scene_texture_cornell_notex.txt` | 纯色 diffuse | 对照：经典 Cornell |
+| **B** | `scene_texture_cornell.txt` | `plaster_albedo.bmp`，**无法线贴图** | 仅 albedo 纹理 |
+| **C** | `scene_texture_cornell_normal.txt` | 同 albedo + `plaster_normal.bmp` | 略降 diffuse、加 specular/shininess，使 Whitted 点光下 **bump 可见** |
+
+**B vs C 差异**：Panel B 只有颜色变化，墙仍近似平面 Phong；Panel C 法线扰动改变 **每像素法线方向**，在固定点光源下高光与阴影边界随 bump 起伏——法线强度需足够（`plaster_normal.bmp` 比早期 subtle 版本更强），否则 Whitted 单样本下几乎看不出差异。
+
+#### 5.8.4 渲染命令
+
+```bash
+cd code
+cmake --build build -j$(nproc)
+./build/gen_textures
+
+# 三面板（CPU Whitted，SPP=1，建议开 gamma）
+./build/PA1-2 testcases/scene_texture_cornell_notex.txt output/texture_cornell_notex.bmp whitted 1 gamma
+./build/PA1-2 testcases/scene_texture_cornell.txt output/texture_cornell.bmp whitted 1 gamma
+./build/PA1-2 testcases/scene_texture_cornell_normal.txt output/texture_cornell_normal.bmp whitted 1 gamma
+
+# 可选：拼接提交用单图
+python3 scripts/make_texture_showcase.py   # → output/texture_showcase.png
+```
+
+| 输出 | 说明 |
+|------|------|
+| `output/texture_cornell_notex.bmp` | Panel A |
+| `output/texture_cornell.bmp` | Panel B |
+| `output/texture_cornell_normal.bmp` | Panel C |
+| `output/texture_showcase.png` | 三图横向拼接（提交用） |
+
+早期地板棋盘格 demo 仍可用 `scene_texture.txt` + `scene_whitted.txt` 对比。
+
+### 5.9 路径引导 Path Guiding（bonus）
+
+**仅 CUDA**：CLI 模式 `path_guiding`（别名 `guiding` / `pathguiding`），必须带 `cuda` / `gpu`。相对完整 Practical Path Guiding（SD-tree），本实现为 **两趟 GPU 简化版**：`8³` 空间网格 + 每格 `16×16` lat-long 方向 bin（见 `include/cuda_types.h` 中 `GpuGuidingGrid`）。
+
+#### 5.9.1 动机与适用场景
+
+NEE 解决 **直接光** 采样；被遮挡、仅靠红/绿墙与顶板 **多次反弹** 照亮的区域，余弦半球几乎打不中「亮方向」，间接方差主导画面噪声。路径引导在训练阶段学习 **「从该空间位置，哪些 ωᵢ 常带来亮辐射」**，渲染时与 BRDF 采样 MIS 合并，**同 SPP 下阴影/暗区更干净**，全图亮度应与 `path_nee` 接近（无偏 MC）。
+
+**推荐 demo**：`testcases/scene_guiding_occluder.txt` — 经典 Cornell + 天花板面光源 + **悬挂遮挡板**（中央地板/球无直射，间接为主）。比窄缝门 demo 几何更简单、无墙洞 bug，答辩时直观：**挡光板 → 软阴影 → 引导学反弹方向**。
+
+#### 5.9.2 两趟流水线
 
 ```
-Material {
-  diffuseColor 0.725 0.725 0.725
-  texture textures/floor_checker.bmp
-}
+renderWithCuda(path_guiding)
+  ├─ 1. uploadScene + initCurandKernel
+  ├─ 2. trainGuideKernel(train_spp)     ← 训练趟，不写像素
+  ├─ 3. normalizeGuideKernel            ← 每格 bin 归一化为离散 PDF
+  └─ 4. renderKernel(render_spp, useGuideGrid=true)  ← 正式渲染
 ```
 
-| 图片 | 命令 | 说明 |
-|------|------|------|
-| `texture_before.bmp` | `scene_whitted.txt whitted` | 地板纯色（无纹理） |
-| `texture_after.bmp` | `scene_texture.txt whitted` | 地板棋盘格纹理 |
+| 内核 | 作用 |
+|------|------|
+| **`trainGuideKernel`** | 每像素 `train_spp` 次：70% **light tracing**（从随机 `AreaLight` 面采样一点，余弦半球出射，带 `emission×area` throughput）；30% 相机 primary ray。均调用 `castRayPath(..., trainingPass=true)`，**不写 framebuffer** |
+| **`normalizeGuideKernel`** | 有数据的格子将权重和归一化为 1；**空格子保持 0**（渲染时回退纯余弦 BRDF） |
+| **`renderKernel`** | 与 `path_nee` 相同 SPP 路径追踪，但间接 bounce 启用引导 MIS |
 
-对比场景：Cornell Box Whitted（SPP=1）。`scene_texture.txt` 仅在地板材质（索引 0）增加 `texture` 行，其余与 `scene_whitted.txt` 相同。纹理文件 `code/textures/floor_checker.bmp` 为 256×256 棋盘格。
+#### 5.9.3 `GpuGuidingGrid` 结构
 
-实现文件：`include/texture.hpp`、`src/texture.cpp`；`Hit` 携带 UV；`Material::getShadedDiffuse(hit)` 在 Whitted Phong 与 Path/NEE 漫反射路径中统一采样。
+| 字段 | 值 / 含义 |
+|------|-----------|
+| `bboxMin` / `bboxMax` | 场景 AABB（`cuda_scene_builder` 扁平化时计算） |
+| `res` | `8` → **512** 个空间 cell |
+| `thetaBins` × `phiBins` | `16×16` → 每 cell **256** 个方向 bin（半球 lat-long） |
+| `weights` | 设备端 float 数组，长度 `512×256`；`atomicAdd` 训练写入 |
+
+**空间索引**：命中点 `pos` 线性映射到 `[ix,iy,iz]`，cell = `ix + iy·res + iz·res²`。
+
+**方向 bin**：入射方向 `ωᵢ`（相对 shading 法线 `N` 的半球）按 `θ = acos(N·ωᵢ)`、`φ = atan2` 落入 `(tBin, pBin)`；bin 立体角 `Δω` 用于 pdf = `w_bin / sum_cell / Δω`。
+
+#### 5.9.4 训练沉积（何时、沉积什么）
+
+训练趟 `trainingPass=true` 时，在 **漫反射 / 光泽** 命中点记录 **入射方向** `ωᵢ = -rayDir`（即将用于继续追踪的方向）：
+
+| 时机 | 沉积内容 | 权重 |
+|------|----------|------|
+| 间接 bounce 返回 `Li` 后 | `guideDeposit(pos, N, ωᵢ, weight)` | `weight = luminance(Li) × max(luminance(throughput), ε)` |
+| 训练趟 NEE 直接光（面光 / 点光） | 向光源方向 `ωᵢ` 沉积 | 同上，基于直接光贡献亮度 |
+| Light tracing 起点 | 从光源反向路径同上规则 | 70% 训练样本走此路径，强化「从亮处 outgoing 的方向分布」 |
+
+`guideDeposit` 内部：`atomicAdd(weight × cosθ_in)` 到对应 cell+bin（`cosθ_in = N·ωᵢ`，仅上半球）。
+
+#### 5.9.5 渲染阶段 MIS
+
+常量 `kGuideMisProb = 0.5`。间接采样时：
+
+1. 若当前 cell **无训练数据** → 回退纯余弦半球（与 `path_nee` 一致）。
+2. 否则 50% 采余弦 BRDF 方向，50% 按引导直方图 `sampleGuidingDir`。
+3. **Balance MIS**（单样本合并两策略 pdf）：
+   - `pdf_brdf = cosθ/π`（Lambert）
+   - `pdf_guide = evalGuidingPdf(...)`
+   - `pdf_total = 0.5 × pdf_brdf + 0.5 × pdf_guide`
+   - `indirect = brdf × cosθ × Li / (pdf_total × rrProb)`
+
+直接光仍走 NEE；主光线 `countEmissive=true`（直视发光体可见），间接子路径 `countEmissive=false`。
+
+#### 5.9.6 CLI 与推荐对比
+
+```bash
+cd code
+cmake --build build -j$(nproc)
+
+# 推荐 demo：遮挡板 Cornell，低 SPP 易看出差异
+./build/PA1-2 testcases/scene_guiding_occluder.txt output/guiding_occluder_nee_64.bmp path_nee 64 gamma cuda
+./build/PA1-2 testcases/scene_guiding_occluder.txt output/guiding_occluder_guided_64.bmp path_guiding 64 gamma cuda train_spp 256
+
+./build/PA1-2 testcases/scene_guiding_occluder.txt output/guiding_occluder_nee_128.bmp path_nee 128 gamma cuda
+./build/PA1-2 testcases/scene_guiding_occluder.txt output/guiding_occluder_guided_128.bmp path_guiding 128 gamma cuda train_spp 512
+```
+
+| 参数 | 说明 |
+|------|------|
+| `path_guiding` | 启用训练 + 引导渲染（等同 `PATH_TRACE_GUIDING`） |
+| `cuda` / `gpu` | **必须**；无 CUDA 时 main 报错 |
+| `train_spp N` | 训练趟每像素样本数；默认 `max(render_spp, 256)` |
+| 对比 | 同场景、同 render SPP：`path_nee` vs `path_guiding`；看 **中央阴影区** std/颗粒，全图 mean 应接近 |
+
+**自测参考**（`scene_guiding_occluder.txt`，64 spp / train 256）：全图亮度比 guided/nee ≈ **1.06**；中央 ROI std 降约 **15%**；训练填充约 24% cell。
+
+#### 5.9.7 局限
+
+| 局限 | 说明 |
+|------|------|
+| 仅 GPU | CPU `RayTracer` 无 guiding 模式 |
+| 粗网格 | `8³×16²` 直方图，空间/方向分辨率有限；空 cell 等同 `path_nee` |
+| 无完整 SD-tree | 未实现在线迭代更新、无 product/importance 分解 |
+| 直接光主导区 | 全画面 NEE 已很强时，guided vs nee 差异小；应裁切 **间接主导 ROI** 对比 |
+| 与 `path_mis` 正交 | 当前 guiding 用 Balance MIS 合并 BRDF+guide，未与 NEE 做 Power MIS |
+
+**关键文件**：`include/cuda_types.h`（`GpuGuidingGrid`）、`src/cuda_path_tracer.cu`（`trainGuideKernel` / `renderKernel` / `sampleIndirectWithGuide`）、`src/cuda_scene_builder.cpp`（AABB）、`src/main.cpp`（`train_spp` 解析）。
 
 ### 5.7 加分项路线图（终局展示场景，未实现）
 
@@ -205,9 +367,10 @@ Material {
 2. ✅ **OpenMP 并行** — 已修复 critical 锁；`path_nee 32` 约 7.6× 加速（§5.6）  
 3. ✅ **抗锯齿（AA）** — SPP>1 抖动子样本（§5.6.1）  
 4. ✅ **纹理贴图** — 可选 `texture` 字段（§5.8）  
-5. **法线贴图** — 下一项建议；复用 UV 与纹理管线  
-6. **MIS** — 光泽 + NEE 降方差  
-7. **环境贴图 IBL / 景深 / BVH** — 展示场景与性能进阶  
+5. ✅ **法线贴图** — 与纹理共用 UV/TBN 管线（§5.8）  
+6. ✅ **Path Guiding** — CUDA 两趟简化引导 + NEE（§5.9）  
+7. **MIS** — 光泽 + NEE 降方差  
+8. **环境贴图 IBL / 景深 / BVH** — 展示场景与性能进阶  
 
 终局场景可规划为：Cornell Box 变体 + 光泽/金属球 + 贴地玻璃 + 环境光 + 景深 + `path_nee` 高 SPP + `gamma` + `omp` 离线渲染。当前阶段 **仅逐项实现 bonus**，暂不搭建完整展示场景。
 
@@ -301,7 +464,9 @@ Whitted 整体更亮，来自点光源集中能量；路径追踪能量分散于
 |------|------|
 | 玻璃 firefly | 完美折射无菲涅尔（基础要求），64 SPP 时立方体边缘偶见亮斑；radiance clamp 缓解但未完全消除 |
 | SPP=64 方差 | 路径对比图仍有可见噪点；提高 SPP 会更干净 |
-| 无 MIS | 光泽瓣与 NEE 未做多重重要性采样 |
+| 无 MIS | 光泽瓣与 NEE 未做多重重要性采样（`path_mis` 已实现，见 IMPLEMENTATION.md） |
+| 纹理 / 法线仅 CPU | GPU 扁平化不传 BMP；纹理与法线贴图验收用 Whitted / CPU path（§5.8） |
+| Path Guiding 仅 CUDA | 粗网格直方图；空 cell 与直接光主导区与 `path_nee` 差异小（§5.9） |
 | 默认线性输出 | 主结果图为线性 radiance；gamma 对比见 §5.5 |
 | Whitted 无菲涅尔折射 | 符合作业基础要求文档 |
 
@@ -346,10 +511,15 @@ build/PA1-2 testcases/scene_path.txt output/omp_serial.bmp path_nee 32
 build/PA1-2 testcases/scene_path.txt output/omp_parallel.bmp path_nee 32 omp
 cp output/omp_serial.bmp output/omp_parallel.bmp ../results/
 
-# 纹理贴图对比（bonus）
-build/PA1-2 testcases/scene_whitted.txt output/texture_before.bmp whitted
-build/PA1-2 testcases/scene_texture.txt output/texture_after.bmp whitted
-cp output/texture_before.bmp output/texture_after.bmp ../results/
+# 纹理 Cornell 三面板（bonus，CPU only）
+./build/gen_textures
+./build/PA1-2 testcases/scene_texture_cornell_notex.txt output/texture_cornell_notex.bmp whitted 1 gamma
+./build/PA1-2 testcases/scene_texture_cornell.txt output/texture_cornell.bmp whitted 1 gamma
+./build/PA1-2 testcases/scene_texture_cornell_normal.txt output/texture_cornell_normal.bmp whitted 1 gamma
+
+# Path Guiding 对比（bonus，CUDA only）
+./build/PA1-2 testcases/scene_guiding_occluder.txt output/guiding_occluder_nee_64.bmp path_nee 64 gamma cuda
+./build/PA1-2 testcases/scene_guiding_occluder.txt output/guiding_occluder_guided_64.bmp path_guiding 64 gamma cuda train_spp 256
 
 # 回归
 build/PA1-2 testcases/scene01_basic.txt output/scene01.bmp whitted

@@ -22,9 +22,13 @@ public:
 
     static bool writeBrickAlbedoBMP(const char *filename, int size = 512);
     static bool writeBrickNormalBMP(const char *filename, int size = 512);
+    static bool writePlasterAlbedoBMP(const char *filename, int size = 512);
+    static bool writePlasterNormalBMP(const char *filename, int size = 512);
+    static bool writeMarbleAlbedoBMP(const char *filename, int size = 512);
     static bool writeWoodAlbedoBMP(const char *filename, int size = 512);
     static bool writeStoneAlbedoBMP(const char *filename, int size = 512);
     static bool writeStoneNormalBMP(const char *filename, int size = 512);
+    static bool writeEarthAlbedoBMP(const char *filename, int size = 512);
     static bool generateShowcaseTextures(const char *dir);
 
     bool valid() const {

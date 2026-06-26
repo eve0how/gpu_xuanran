@@ -6,5 +6,5 @@ CXX_DEFINES =
 
 CXX_INCLUDES = -I/data/PA1-2/code/include -I/data/PA1-2/code/deps/vecmath/include
 
-CXX_FLAGS = -O3 -DNDEBUG -std=gnu++11
+CXX_FLAGS = -O3 -DNDEBUG -O2 -std=gnu++11
 

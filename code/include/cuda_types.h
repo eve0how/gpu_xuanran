@@ -20,7 +20,7 @@ enum GpuRenderMode : int {
 };
 
 // Practical path guiding: 3D grid over scene AABB, lat-long directional histogram per cell.
-constexpr int kGuideGridRes = 16;
+constexpr int kGuideGridRes = 8;
 constexpr int kGuideThetaBins = 16;
 constexpr int kGuidePhiBins = 16;
 constexpr int kGuideBinsPerCell = kGuideThetaBins * kGuidePhiBins;

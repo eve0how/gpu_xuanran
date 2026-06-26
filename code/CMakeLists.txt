@@ -64,6 +64,7 @@ ENDIF()
 ADD_EXECUTABLE(gen_textures src/gen_textures.cpp src/texture.cpp)
 TARGET_LINK_LIBRARIES(gen_textures vecmath)
 TARGET_INCLUDE_DIRECTORIES(gen_textures PRIVATE include)
+TARGET_COMPILE_OPTIONS(gen_textures PRIVATE -O2)
 
 FIND_PACKAGE(OpenMP)
 IF(OpenMP_CXX_FOUND)

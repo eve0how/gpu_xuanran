@@ -49,10 +49,20 @@ bool Mesh::intersect(const Ray &r, Hit &h, float tmin) {
         }
 
         h.set(t, material, n[triId]);
+        float alpha = 1.0f - beta - gamma;
+        if (!vn.empty() && triIndex.vn[0] >= 0 && triIndex.vn[1] >= 0 && triIndex.vn[2] >= 0) {
+            int nvn = (int) vn.size();
+            if (triIndex.vn[0] < nvn && triIndex.vn[1] < nvn && triIndex.vn[2] < nvn) {
+                Vector3f smoothN = vn[triIndex.vn[0]] * alpha + vn[triIndex.vn[1]] * beta +
+                                   vn[triIndex.vn[2]] * gamma;
+                if (smoothN.length() > 1e-8f) {
+                    h.setNormal(smoothN.normalized());
+                }
+            }
+        }
         if (!vt.empty() && triIndex.vt[0] >= 0 && triIndex.vt[1] >= 0 && triIndex.vt[2] >= 0) {
             int nvt = (int) vt.size();
             if (triIndex.vt[0] < nvt && triIndex.vt[1] < nvt && triIndex.vt[2] < nvt) {
-                float alpha = 1.0f - beta - gamma;
                 const Vector2f &uv0 = vt[triIndex.vt[0]];
                 const Vector2f &uv1 = vt[triIndex.vt[1]];
                 const Vector2f &uv2 = vt[triIndex.vt[2]];
@@ -90,6 +100,7 @@ Mesh::Mesh(const char *filename, Material *material) : Object3D(material) {
     std::string vTok("v");
     std::string fTok("f");
     std::string texTok("vt");
+    std::string normTok("vn");
     std::string tok;
     while (true) {
         std::getline(f, line);
@@ -112,6 +123,10 @@ Mesh::Mesh(const char *filename, Material *material) : Object3D(material) {
             Vector2f texcoord;
             ss >> texcoord[0] >> texcoord[1];
             vt.push_back(texcoord);
+        } else if (tok == normTok) {
+            Vector3f normal;
+            ss >> normal[0] >> normal[1] >> normal[2];
+            vn.push_back(normal.normalized());
         } else if (tok == fTok) {
             TriangleIndex trig;
             std::stringstream facess(line);
@@ -134,6 +149,7 @@ Mesh::Mesh(const char *filename, Material *material) : Object3D(material) {
                 }
                 trig[ii] = vIdx - 1;
                 trig.vt[ii] = (vtIdx > 0) ? vtIdx - 1 : -1;
+                trig.vn[ii] = (vnIdx > 0) ? vnIdx - 1 : -1;
             }
             t.push_back(trig);
         }

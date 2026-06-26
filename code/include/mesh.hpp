@@ -21,14 +21,19 @@ public:
             vt[0] = -1;
             vt[1] = -1;
             vt[2] = -1;
+            vn[0] = -1;
+            vn[1] = -1;
+            vn[2] = -1;
         }
         int &operator[](const int i) { return x[i]; }
         int x[3]{};
         int vt[3];
+        int vn[3];
     };
 
     std::vector<Vector3f> v;
     std::vector<Vector2f> vt;
+    std::vector<Vector3f> vn;
     std::vector<TriangleIndex> t;
     std::vector<Vector3f> n;
     bool intersect(const Ray &r, Hit &h, float tmin) override;

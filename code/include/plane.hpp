@@ -42,12 +42,13 @@ public:
             } else {
                 tangent = Vector3f::cross(Vector3f(0, 0, 1), n).normalized();
             }
-            Vector3f bitangent = Vector3f::cross(n, tangent);
+            Vector3f bitangent = Vector3f::cross(n, tangent).normalized();
             float u = Vector3f::dot(p, tangent) * 2.0f;
             float v = Vector3f::dot(p, bitangent) * 2.0f;
             u -= floorf(u);
             v -= floorf(v);
             h.setUV(Vector2f(u, v));
+            h.setTBN(tangent, bitangent);
             return true;
         }
         return false;
