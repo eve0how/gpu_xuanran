@@ -82,6 +82,16 @@ $B testcases/scene_showcase.txt output/showcase_path_mis_cuda.bmp path_mis 128 g
 $B testcases/scene_showcase.txt output/dispersion_before_cuda.bmp path_nee 128 gamma cuda
 $B testcases/scene_showcase.txt output/dispersion_after_cuda.bmp path_nee 128 gamma dispersion cuda
 
+# 8. Glass sphere dispersion — white floor + red backdrop; point light ~5.5
+#    128 spp baseline; 256 spp for clean rainbow caustics on floor
+$B testcases/scene_dispersion.txt output/disp_sphere_before_cuda.bmp path_nee 128 gamma cuda
+$B testcases/scene_dispersion.txt output/disp_sphere_after_cuda.bmp path_nee 256 gamma dispersion cuda
+
+# 9. Dark Side prism — black void, light from left, rainbow on right screen
+#    128 spp baseline; 256 spp for visible red-to-blue spectrum
+$B testcases/scene_prism_darkside.txt output/prism_before_cuda.bmp path_nee 128 gamma cuda
+$B testcases/scene_prism_darkside.txt output/prism_after_cuda.bmp path_nee 256 gamma dispersion cuda
+
 # 7. Textures
 ./build/gen_textures 2>/dev/null || true
 $B testcases/scene_texture.txt output/scene_texture_cuda.bmp whitted cuda
