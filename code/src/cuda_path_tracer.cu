@@ -296,7 +296,12 @@ __device__ RefractSplit computeRefractSplit(float3 D, float3 geomN, float ior) {
     split.refractDir = norm3(add3(mul3(D, eta), mul3(n, eta * cosTheta - sqrtf(k))));
     float r0 = (etai - etat) / (etai + etat);
     r0 = r0 * r0;
-    split.fresnel = r0 + (1.0f - r0) * powf(1.0f - cosTheta, 5.0f);
+    float cosI = -cosTheta;
+    if (etai > etat) {
+        cosI = sqrtf(k);
+    }
+    split.fresnel = r0 + (1.0f - r0) * powf(1.0f - cosI, 5.0f);
+    split.fresnel = fminf(1.0f, fmaxf(0.0f, split.fresnel));
     split.tir = false;
     return split;
 }
@@ -1091,20 +1096,14 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
                                               mode, dispersionEnabled, dispChannel, nullptr, guideGrid,
                                               trainingPass, rng));
         }
-        if (gpuUniform(rng) < split.fresnel) {
-            float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
-            float3 newTp = mul3(scaleDispAttenuation(throughput, refractColor, dispChannel),
-                                1.0f / fmaxf(1e-8f, split.fresnel));
-            return clampRadiance3(castRayPath(scene, reflOrigin, split.reflectDir, depth + 1, newTp, true,
-                                              mode, dispersionEnabled, dispChannel, nullptr, guideGrid,
-                                              trainingPass, rng));
-        }
+        float3 chTp = scaleDispAttenuation(throughput, refractColor, dispChannel);
+        float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
         float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
-        float3 newTp = mul3(scaleDispAttenuation(throughput, refractColor, dispChannel),
-                            1.0f / fmaxf(1e-8f, 1.0f - split.fresnel));
-        return clampRadiance3(castRayPath(scene, refrOrigin, split.refractDir, depth + 1, newTp, true, mode,
-                                          dispersionEnabled, dispChannel, nullptr, guideGrid, trainingPass,
-                                          rng));
+        float3 reflChild = castRayPath(scene, reflOrigin, split.reflectDir, depth + 1, chTp, true, mode,
+                                       dispersionEnabled, dispChannel, nullptr, guideGrid, trainingPass, rng);
+        float3 refrChild = castRayPath(scene, refrOrigin, split.refractDir, depth + 1, chTp, true, mode,
+                                       dispersionEnabled, dispChannel, nullptr, guideGrid, trainingPass, rng);
+        return clampRadiance3(add3(mul3(reflChild, split.fresnel), mul3(refrChild, 1.0f - split.fresnel)));
     }
 
     if (mat.type == GPU_MAT_GLOSSY) {
