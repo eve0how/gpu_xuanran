@@ -264,6 +264,43 @@ __device__ float3 computeRefractDirection(float3 D, float3 geomN, float ior) {
     return norm3(add3(mul3(D, eta), mul3(n, eta * cosTheta - sqrtf(k))));
 }
 
+struct RefractSplit {
+    float3 refractDir;
+    float3 reflectDir;
+    float fresnel;
+    bool tir;
+};
+
+__device__ RefractSplit computeRefractSplit(float3 D, float3 geomN, float ior) {
+    RefractSplit split{};
+    float etai = 1.0f;
+    float etat = ior;
+    float3 n = geomN;
+    float cosTheta = dot3(D, n);
+    if (cosTheta > 0.0f) {
+        etai = ior;
+        etat = 1.0f;
+        n = mul3(n, -1.0f);
+        cosTheta = -cosTheta;
+    }
+    float eta = etai / etat;
+    float k = 1.0f - eta * eta * (1.0f - cosTheta * cosTheta);
+    float3 Nface = faceNormal(D, geomN);
+    split.reflectDir = norm3(sub3(D, mul3(Nface, 2.0f * dot3(D, Nface))));
+    if (k < 0.0f) {
+        split.tir = true;
+        split.refractDir = split.reflectDir;
+        split.fresnel = 1.0f;
+        return split;
+    }
+    split.refractDir = norm3(add3(mul3(D, eta), mul3(n, eta * cosTheta - sqrtf(k))));
+    float r0 = (etai - etat) / (etai + etat);
+    r0 = r0 * r0;
+    split.fresnel = r0 + (1.0f - r0) * powf(1.0f - cosTheta, 5.0f);
+    split.tir = false;
+    return split;
+}
+
 __device__ void buildBasis(float3 n, float3 &tangent, float3 &bitangent) {
     if (fabsf(n.x) > fabsf(n.y)) {
         tangent = norm3(make3(-n.z, 0.0f, n.x));
@@ -978,7 +1015,9 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
 
     if (mat.type == GPU_MAT_REFRACT) {
         float3 refractColor = load3(mat.specular);
+        bool useFresnel = mat.fresnelEnabled != 0;
         bool exiting = dot3(D, geomN) > 0.0f;
+        float3 Nface = faceNormal(D, geomN);
         // Exit split only (entry stays single-ray): different IOR per channel projects rainbow on screen.
         if (dispersionEnabled && mat.dispersionDelta > 0.0f && dispChannel < 0 && exiting) {
             float rx = 0.0f;
@@ -986,18 +1025,49 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
             float bz = 0.0f;
             for (int c = 0; c < 3; ++c) {
                 float ior = channelIor(mat.ior, mat.dispersionDelta, c);
-                float3 newDir = computeRefractDirection(D, geomN, ior);
-                float3 origin = offsetAlongRay(hitPoint, newDir, kRefractOriginOffset);
+                RefractSplit split = computeRefractSplit(D, geomN, ior);
                 float3 chTp = scaleDispAttenuation(throughput, refractColor, c);
-                float3 child = castRayPath(scene, origin, newDir, depth + 1, chTp, true, mode,
-                                           dispersionEnabled, c, nullptr, guideGrid, trainingPass,
-                                           rng);
-                if (c == 0) {
-                    rx = child.x;
-                } else if (c == 1) {
-                    gy = child.y;
+                if (split.tir) {
+                    float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
+                    float3 child = castRayPath(scene, reflOrigin, split.reflectDir, depth + 1, chTp, true,
+                                               mode, dispersionEnabled, c, nullptr, guideGrid, trainingPass,
+                                               rng);
+                    if (c == 0) {
+                        rx = child.x;
+                    } else if (c == 1) {
+                        gy = child.y;
+                    } else {
+                        bz = child.z;
+                    }
+                } else if (!useFresnel) {
+                    float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
+                    float3 child = castRayPath(scene, refrOrigin, split.refractDir, depth + 1, chTp, true,
+                                               mode, dispersionEnabled, c, nullptr, guideGrid, trainingPass,
+                                               rng);
+                    if (c == 0) {
+                        rx = child.x;
+                    } else if (c == 1) {
+                        gy = child.y;
+                    } else {
+                        bz = child.z;
+                    }
                 } else {
-                    bz = child.z;
+                    float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
+                    float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
+                    float3 reflChild = castRayPath(scene, reflOrigin, split.reflectDir, depth + 1, chTp, true,
+                                                   mode, dispersionEnabled, c, nullptr, guideGrid, trainingPass,
+                                                   rng);
+                    float3 refrChild = castRayPath(scene, refrOrigin, split.refractDir, depth + 1, chTp, true,
+                                                   mode, dispersionEnabled, c, nullptr, guideGrid, trainingPass,
+                                                   rng);
+                    float mix = split.fresnel * reflChild.x + (1.0f - split.fresnel) * refrChild.x;
+                    if (c == 0) {
+                        rx = mix;
+                    } else if (c == 1) {
+                        gy = split.fresnel * reflChild.y + (1.0f - split.fresnel) * refrChild.y;
+                    } else {
+                        bz = split.fresnel * reflChild.z + (1.0f - split.fresnel) * refrChild.z;
+                    }
                 }
             }
             return clampRadiance3(make3(rx, gy, bz));
@@ -1006,12 +1076,35 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
         if (dispChannel >= 0 && mat.dispersionDelta > 0.0f) {
             ior = channelIor(mat.ior, mat.dispersionDelta, dispChannel);
         }
-        float3 newDir = computeRefractDirection(D, geomN, ior);
-        float3 origin = offsetAlongRay(hitPoint, newDir, kRefractOriginOffset);
-        float3 newTp = scaleDispAttenuation(throughput, refractColor, dispChannel);
-        return clampRadiance3(castRayPath(scene, origin, newDir, depth + 1, newTp, true, mode,
-                                          dispersionEnabled, dispChannel, nullptr, guideGrid,
-                                          trainingPass, rng));
+        RefractSplit split = computeRefractSplit(D, geomN, ior);
+        if (split.tir) {
+            float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
+            float3 newTp = scaleDispAttenuation(throughput, refractColor, dispChannel);
+            return clampRadiance3(castRayPath(scene, reflOrigin, split.reflectDir, depth + 1, newTp, true,
+                                              mode, dispersionEnabled, dispChannel, nullptr, guideGrid,
+                                              trainingPass, rng));
+        }
+        if (!useFresnel) {
+            float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
+            float3 newTp = scaleDispAttenuation(throughput, refractColor, dispChannel);
+            return clampRadiance3(castRayPath(scene, refrOrigin, split.refractDir, depth + 1, newTp, true,
+                                              mode, dispersionEnabled, dispChannel, nullptr, guideGrid,
+                                              trainingPass, rng));
+        }
+        if (gpuUniform(rng) < split.fresnel) {
+            float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
+            float3 newTp = mul3(scaleDispAttenuation(throughput, refractColor, dispChannel),
+                                1.0f / fmaxf(1e-8f, split.fresnel));
+            return clampRadiance3(castRayPath(scene, reflOrigin, split.reflectDir, depth + 1, newTp, true,
+                                              mode, dispersionEnabled, dispChannel, nullptr, guideGrid,
+                                              trainingPass, rng));
+        }
+        float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
+        float3 newTp = mul3(scaleDispAttenuation(throughput, refractColor, dispChannel),
+                            1.0f / fmaxf(1e-8f, 1.0f - split.fresnel));
+        return clampRadiance3(castRayPath(scene, refrOrigin, split.refractDir, depth + 1, newTp, true, mode,
+                                          dispersionEnabled, dispChannel, nullptr, guideGrid, trainingPass,
+                                          rng));
     }
 
     if (mat.type == GPU_MAT_GLOSSY) {
@@ -1303,32 +1396,80 @@ __device__ float3 castRayWhitted(const GpuSceneDevice &scene, float3 orig, float
     }
 
     float3 refractColor = load3(mat.specular);
+    bool useFresnel = mat.fresnelEnabled != 0;
     bool exiting = dot3(D, geomN) > 0.0f;
+    float3 Nface = faceNormal(D, geomN);
     if (dispersionEnabled && mat.dispersionDelta > 0.0f && exiting) {
         float rx = 0.0f;
         float gy = 0.0f;
         float bz = 0.0f;
         for (int c = 0; c < 3; ++c) {
             float ior = channelIor(mat.ior, mat.dispersionDelta, c);
-            float3 newDir = computeRefractDirection(D, geomN, ior);
-            float3 origin = offsetAlongRay(hitPoint, newDir, kRefractOriginOffset);
-            float3 child = castRayWhitted(scene, origin, newDir, depth + 1, kRefractRayTMin,
-                                          dispersionEnabled, rng);
-            if (c == 0) {
-                rx = child.x * refractColor.x;
-            } else if (c == 1) {
-                gy = child.y * refractColor.y;
+            RefractSplit split = computeRefractSplit(D, geomN, ior);
+            if (split.tir) {
+                float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
+                float3 child = castRayWhitted(scene, reflOrigin, split.reflectDir, depth + 1, kRayEps,
+                                              dispersionEnabled, rng);
+                if (c == 0) {
+                    rx = child.x * refractColor.x;
+                } else if (c == 1) {
+                    gy = child.y * refractColor.y;
+                } else {
+                    bz = child.z * refractColor.z;
+                }
+            } else if (!useFresnel) {
+                float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
+                float3 child = castRayWhitted(scene, refrOrigin, split.refractDir, depth + 1, kRefractRayTMin,
+                                              dispersionEnabled, rng);
+                if (c == 0) {
+                    rx = child.x * refractColor.x;
+                } else if (c == 1) {
+                    gy = child.y * refractColor.y;
+                } else {
+                    bz = child.z * refractColor.z;
+                }
             } else {
-                bz = child.z * refractColor.z;
+                float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
+                float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
+                float3 reflChild = castRayWhitted(scene, reflOrigin, split.reflectDir, depth + 1, kRayEps,
+                                                  dispersionEnabled, rng);
+                float3 refrChild = castRayWhitted(scene, refrOrigin, split.refractDir, depth + 1, kRefractRayTMin,
+                                                  dispersionEnabled, rng);
+                if (c == 0) {
+                    rx = refractColor.x *
+                         (split.fresnel * reflChild.x + (1.0f - split.fresnel) * refrChild.x);
+                } else if (c == 1) {
+                    gy = refractColor.y *
+                         (split.fresnel * reflChild.y + (1.0f - split.fresnel) * refrChild.y);
+                } else {
+                    bz = refractColor.z *
+                         (split.fresnel * reflChild.z + (1.0f - split.fresnel) * refrChild.z);
+                }
             }
         }
         return make3(rx, gy, bz);
     }
 
-    float3 newDir = computeRefractDirection(D, geomN, mat.ior);
-    float3 origin = offsetAlongRay(hitPoint, newDir, kRefractOriginOffset);
-    float3 child = castRayWhitted(scene, origin, newDir, depth + 1, kRefractRayTMin, dispersionEnabled, rng);
-    return mul3v(child, refractColor);
+    RefractSplit split = computeRefractSplit(D, geomN, mat.ior);
+    if (split.tir) {
+        float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
+        float3 child = castRayWhitted(scene, reflOrigin, split.reflectDir, depth + 1, kRayEps,
+                                      dispersionEnabled, rng);
+        return mul3v(child, refractColor);
+    }
+    if (!useFresnel) {
+        float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
+        float3 child = castRayWhitted(scene, refrOrigin, split.refractDir, depth + 1, kRefractRayTMin,
+                                      dispersionEnabled, rng);
+        return mul3v(child, refractColor);
+    }
+    float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
+    float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
+    float3 reflChild = castRayWhitted(scene, reflOrigin, split.reflectDir, depth + 1, kRayEps,
+                                      dispersionEnabled, rng);
+    float3 refrChild = castRayWhitted(scene, refrOrigin, split.refractDir, depth + 1, kRefractRayTMin,
+                                      dispersionEnabled, rng);
+    return mul3v(add3(mul3(reflChild, split.fresnel), mul3(refrChild, 1.0f - split.fresnel)), refractColor);
 }
 
 __device__ float3 generateCameraRay(const GpuCamera &cam, float px, float py) {
