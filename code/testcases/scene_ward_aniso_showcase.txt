@@ -1,3 +1,5 @@
+# DEPRECATED: use scene_brdf_metal_compare.txt (three spheres, dark metal room).
+# This panel-based showcase is kept for reference only.
 
 PerspectiveCamera {
     center 0.35 0.45 2.6
@@ -62,9 +64,9 @@ Materials {
     WardMaterial {
         diffuseColor 0 0 0
         specularColor 0.95 0.72 0.28
-        alphaX 0.45
-        alphaY 0.03
-        tangent 1 0 0
+        alphaX 0.04
+        alphaY 0.45
+        tangent 0 1 0
     }
 }
 

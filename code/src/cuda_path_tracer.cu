@@ -975,20 +975,32 @@ __device__ bool isSegmentOccluded(const GpuSceneDevice &scene, float3 from, floa
     if (dot3(shadowN, dir) < 0.0f) {
         shadowN = mul3(shadowN, -1.0f);
     }
-    float3 shadowOrigin = add3(from, mul3(shadowN, kShadowEps));
-    float segDist = len3(sub3(to, shadowOrigin));
-    HitRec hit;
-    if (!intersectScene(scene, shadowOrigin, dir, kRayEps, hit)) {
-        return false;
+    float3 origin = add3(from, mul3(shadowN, kShadowEps));
+    for (int pass = 0; pass < 8; ++pass) {
+        float remaining = len3(sub3(to, origin));
+        if (remaining <= kRayEps) {
+            return false;
+        }
+        HitRec hit;
+        if (!intersectScene(scene, origin, dir, kRayEps, hit)) {
+            return false;
+        }
+        if (hit.t >= remaining - kShadowEps) {
+            return false;
+        }
+        const GpuMaterial &blocker =
+            scene.materials[hit.matId < 0 || hit.matId >= scene.numMaterials ? 0 : hit.matId];
+        if (blocker.type == GPU_MAT_EMISSIVE) {
+            return false;
+        }
+        if (blocker.type == GPU_MAT_REFRACT) {
+            float3 hitPoint = add3(origin, mul3(dir, hit.t));
+            origin = offsetAlongRay(hitPoint, dir, kRefractOriginOffset);
+            continue;
+        }
+        return true;
     }
-    if (hit.t >= segDist - kShadowEps) {
-        return false;
-    }
-    const GpuMaterial &blocker = scene.materials[hit.matId < 0 || hit.matId >= scene.numMaterials ? 0 : hit.matId];
-    if (blocker.type == GPU_MAT_EMISSIVE) {
-        return false;
-    }
-    return true;
+    return false;
 }
 
 __device__ float3 sampleTriangle(float3 v0, float3 v1, float3 v2, curandState &rng) {

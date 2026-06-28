@@ -1,6 +1,6 @@
 
 PerspectiveCamera {
-    center 0 1.05 3.8
+    center 0 0.50 3.8
     direction 0 0 -1
     up 0 1 0
     angle 36
@@ -14,13 +14,13 @@ Lights {
         vertex0 -0.20 1.998 -0.20
         vertex1 0.20 1.998 -0.20
         vertex2 0.20 1.998 0.20
-        color 80 80 80
+        color 100 100 100
     }
     AreaLight {
         vertex0 -0.20 1.998 -0.20
         vertex1 0.20 1.998 0.20
         vertex2 -0.20 1.998 0.20
-        color 80 80 80
+        color 100 100 100
     }
 }
 
@@ -29,7 +29,7 @@ Background {
 }
 
 Materials {
-    numMaterials 7
+    numMaterials 8
     Material {
         diffuseColor 0.725 0.725 0.725
     }
@@ -37,10 +37,10 @@ Materials {
         diffuseColor 0.10 0.10 0.10
     }
     Material {
-        diffuseColor 0.630 0.065 0.050
+        diffuseColor 0.780 0.070 0.055
     }
     Material {
-        diffuseColor 0.150 0.680 0.200
+        diffuseColor 0.120 0.720 0.180
     }
     Material {
         diffuseColor 0.12 0.12 0.14
@@ -56,10 +56,13 @@ Materials {
         refractIndex 1.50
         dispersionDelta 0
     }
+    EmissiveMaterial {
+        emission 100 100 100
+    }
 }
 
 Group {
-    numObjects 7
+    numObjects 9
     MaterialIndex 0
     Plane {
         normal 0 1 0
@@ -87,12 +90,24 @@ Group {
     }
     MaterialIndex 5
     Sphere {
-        center -0.45 0.42 0.0
-        radius 0.32
+        center -0.55 0.50 0.0
+        radius 0.28
     }
     MaterialIndex 6
     Sphere {
-        center 0.45 0.42 0.0
-        radius 0.32
+        center 0.55 0.50 0.0
+        radius 0.28
+    }
+    MaterialIndex 7
+    Triangle {
+        vertex0 -0.20 1.998 -0.20
+        vertex1 0.20 1.998 -0.20
+        vertex2 0.20 1.998 0.20
+    }
+    MaterialIndex 7
+    Triangle {
+        vertex0 -0.20 1.998 -0.20
+        vertex1 0.20 1.998 0.20
+        vertex2 -0.20 1.998 0.20
     }
 }

@@ -201,7 +201,7 @@ private:
             newThroughput = newThroughput / probWeight;
         }
         return clampRadiance(castRayPath(Ray(origin, split.reflectDir), depth + 1, newThroughput, true,
-                                         nullptr, dispChannel));
+                                         nullptr, dispChannel, RAY_EPSILON));
     }
 
     Vector3f traceDielectricRefract(const Ray &ray, const Hit &hit, RefractMaterial *mat, int depth,
@@ -219,7 +219,7 @@ private:
             newThroughput = newThroughput / probWeight;
         }
         return clampRadiance(castRayPath(Ray(origin, split.refractDir), depth + 1, newThroughput, true,
-                                         nullptr, dispChannel));
+                                         nullptr, dispChannel, REFRACT_RAY_TMIN));
     }
 
     static float triangleArea(const Vector3f &v0, const Vector3f &v1, const Vector3f &v2) {
@@ -446,22 +446,32 @@ private:
         if (Vector3f::dot(shadowN, dir) < 0.0f) {
             shadowN = -shadowN;
         }
-        Vector3f shadowOrigin = from + shadowN * SHADOW_EPSILON;
-        float segDist = (to - shadowOrigin).length();
-        Ray shadowRay(shadowOrigin, dir);
-        Hit shadowHit;
-        if (!scene.getGroup()->intersect(shadowRay, shadowHit, RAY_EPSILON)) {
-            return false;
+        Vector3f origin = from + shadowN * SHADOW_EPSILON;
+        for (int pass = 0; pass < 8; ++pass) {
+            float remaining = (to - origin).length();
+            if (remaining <= RAY_EPSILON) {
+                return false;
+            }
+            Ray shadowRay(origin, dir);
+            Hit shadowHit;
+            if (!scene.getGroup()->intersect(shadowRay, shadowHit, RAY_EPSILON)) {
+                return false;
+            }
+            if (shadowHit.getT() >= remaining - SHADOW_EPSILON) {
+                return false;
+            }
+            MaterialType blocker = shadowHit.getMaterial()->getType();
+            if (blocker == MaterialType::EMISSIVE) {
+                return false;
+            }
+            if (blocker == MaterialType::REFRACT) {
+                Vector3f hitPoint = origin + dir * shadowHit.getT();
+                origin = offsetAlongRay(hitPoint, dir, REFRACT_ORIGIN_OFFSET);
+                continue;
+            }
+            return true;
         }
-        if (shadowHit.getT() >= segDist - SHADOW_EPSILON) {
-            return false;
-        }
-        MaterialType blocker = shadowHit.getMaterial()->getType();
-        // Emissive geometry is the light source; refractive glass still blocks direct NEE.
-        if (blocker == MaterialType::EMISSIVE) {
-            return false;
-        }
-        return true;
+        return false;
     }
 
     // NEE direct term for one triangle area light (Lambertian).
@@ -747,7 +757,7 @@ private:
         Vector3f origin = offsetAlongNormal(hitPoint, N, ORIGIN_OFFSET);
         Vector3f newThroughput = scaleDispAttenuation(throughput, mat->getReflectColor(), dispChannel);
         return clampRadiance(castRayPath(Ray(origin, reflected), depth + 1, newThroughput, true,
-                                         nullptr, dispChannel));
+                                         nullptr, dispChannel, RAY_EPSILON));
     }
 
     static float channelIor(float baseIor, float delta, int channel) {
@@ -799,22 +809,24 @@ private:
                 if (split.tir) {
                     Vector3f origin = offsetAlongNormal(hitPoint, faceNormal(D, geomN), ORIGIN_OFFSET);
                     Vector3f reflChild = castRayPath(Ray(origin, split.reflectDir), depth + 1, throughput, true,
-                                                     nullptr, c);
+                                                     nullptr, c, RAY_EPSILON);
                     result[c] = reflChild[c];
                 } else if (!useFresnel) {
                     Vector3f origin = offsetAlongRay(hitPoint, split.refractDir, REFRACT_ORIGIN_OFFSET);
                     Vector3f refrChild = castRayPath(Ray(origin, split.refractDir), depth + 1, throughput, true,
-                                                     nullptr, c);
+                                                     nullptr, c, REFRACT_RAY_TMIN);
                     result[c] = refrChild[c];
                 } else if (uniform() < split.fresnel) {
                     Vector3f origin = offsetAlongNormal(hitPoint, faceNormal(D, geomN), ORIGIN_OFFSET);
                     Vector3f newTp = throughput / std::max(1e-8f, split.fresnel);
-                    Vector3f child = castRayPath(Ray(origin, split.reflectDir), depth + 1, newTp, true, nullptr, c);
+                    Vector3f child = castRayPath(Ray(origin, split.reflectDir), depth + 1, newTp, true, nullptr, c,
+                                                 RAY_EPSILON);
                     result[c] = child[c];
                 } else {
                     Vector3f origin = offsetAlongRay(hitPoint, split.refractDir, REFRACT_ORIGIN_OFFSET);
                     Vector3f newTp = throughput / std::max(1e-8f, 1.0f - split.fresnel);
-                    Vector3f child = castRayPath(Ray(origin, split.refractDir), depth + 1, newTp, true, nullptr, c);
+                    Vector3f child = castRayPath(Ray(origin, split.refractDir), depth + 1, newTp, true, nullptr, c,
+                                                 REFRACT_RAY_TMIN);
                     result[c] = child[c];
                 }
             }
@@ -936,13 +948,13 @@ private:
     // path tracing
     Vector3f castRayPath(const Ray &ray, int depth, const Vector3f &throughput,
                          bool countEmissive, const MisIndirectCtx *misCtx = nullptr,
-                         int dispChannel = -1) const {
+                         int dispChannel = -1, float tmin = RAY_EPSILON) const {
         if (depth > MAX_TRACE_DEPTH) {
             return Vector3f::ZERO;
         }
 
         Hit hit;
-        if (!scene.getGroup()->intersect(ray, hit, RAY_EPSILON)) {
+        if (!scene.getGroup()->intersect(ray, hit, tmin)) {
             return Vector3f::ZERO;
         }
 

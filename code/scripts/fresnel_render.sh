@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Fresnel Cornell bonus renders (CUDA path_nee, 256 SPP, gamma).
+# Fresnel Cornell + Ward metal BRDF bonus renders (CUDA path_nee).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-mkdir -p output/fresnel build
+mkdir -p output/fresnel output/ward output/glossy build
 
 echo "Building PA1-2..."
 (cd build && cmake .. && make -j)
@@ -11,22 +11,32 @@ echo "Building PA1-2..."
 render() {
   local scene="$1"
   local out="$2"
-  echo "=== $scene -> $out ==="
-  ./build/PA1-2 "$scene" "$out" path_nee 256 gamma cuda
+  local spp="${3:-256}"
+  echo "=== $scene -> $out (${spp} SPP) ==="
+  ./build/PA1-2 "$scene" "$out" path_nee "$spp" gamma cuda
 }
 
 render testcases/scene_fresnel_cornell_compare.txt \
-       output/fresnel/fresnel_cornell_compare.bmp
+       output/fresnel/fresnel_cornell_compare.bmp 256
 render testcases/scene_fresnel_cornell_water_glass.txt \
-       output/fresnel/fresnel_cornell_water_glass.bmp
-render testcases/scene_fresnel_cornell_grazing.txt \
-       output/fresnel/fresnel_cornell_grazing.bmp
+       output/fresnel/fresnel_cornell_water_glass.bmp 256
+render testcases/scene_fresnel_debug_transmit.txt \
+       output/fresnel/fresnel_debug_transmit.bmp 128
+render testcases/scene_fresnel_grazing_topdown.txt \
+       output/fresnel/fresnel_grazing_topdown.bmp 256
+render testcases/scene_fresnel_grazing_low.txt \
+       output/fresnel/fresnel_grazing_low.bmp 256
 
-python3 -c "from PIL import Image; import os; [Image.open(f'output/fresnel/{n}.bmp').save(f'output/fresnel/{n}.png') for n in ['fresnel_cornell_compare','fresnel_cornell_water_glass','fresnel_cornell_grazing']]"
+render testcases/scene_brdf_metal_compare.txt \
+       output/ward/brdf_metal_compare.bmp 512
+cp output/ward/brdf_metal_compare.bmp output/glossy/brdf_metal_compare.bmp
+
+python3 scripts/fresnel_figures.py
 
 python3 scripts/analyze_fresnel_regions.py \
   output/fresnel/fresnel_cornell_compare.png \
   output/fresnel/fresnel_cornell_water_glass.png \
-  output/fresnel/fresnel_cornell_grazing.png
+  output/fresnel/fresnel_grazing_topdown.png \
+  output/fresnel/fresnel_grazing_low.png
 
-echo "Done. Outputs in output/fresnel/"
+echo "Done. Outputs in output/fresnel/, output/ward/, output/glossy/"

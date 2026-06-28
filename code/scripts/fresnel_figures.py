@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BMP→PNG and rim zoom crops for Fresnel Cornell renders."""
+"""BMP→PNG, labels, and grazing composite for Fresnel Cornell renders."""
 
 from __future__ import annotations
 
@@ -8,10 +8,12 @@ import struct
 import sys
 from pathlib import Path
 
-# Right sphere upper-left silhouette rim (1024² grazing compare).
-GRAZING_RIM_ROI = (520, 60, 900, 340)
-ZOOM_CROP_SIZE = 160
-ZOOM_SCALE = 3
+LABELS = {
+    "fresnel_cornell_compare": ("noFresnel (L)", "Fresnel ON (R)"),
+    "fresnel_cornell_water_glass": ("Water IOR 1.33 (L)", "Glass IOR 1.52 (R)"),
+    "fresnel_grazing_topdown": ("Top-down glass floor", "see red ball below"),
+    "fresnel_grazing_low": ("Grazing angle (F→1)", "mirror floor + red ball"),
+}
 
 
 def read_bmp(path: Path) -> tuple[int, int, list[tuple[float, float, float]]]:
@@ -55,22 +57,80 @@ def save_png_from_bmp(bmp: Path, png: Path) -> None:
     img.save(png, optimize=True)
 
 
-def zoom_rim(bmp: Path, out: Path, roi: tuple[int, int, int, int]) -> None:
-    from PIL import Image
+def add_labels(bmp: Path, out: Path, left: str, right: str) -> None:
+    from PIL import Image, ImageDraw, ImageFont
 
     w, h, px = read_bmp(bmp)
     img = pixels_to_image(px, w, h)
-    x0, y0, x1, y1 = roi
-    cx = (x0 + x1) // 2
-    cy = (y0 + y1) // 2
-    half = ZOOM_CROP_SIZE // 2
-    box = (cx - half, cy - half, cx + half, cy + half)
-    crop = img.crop(box).resize(
-        (ZOOM_CROP_SIZE * ZOOM_SCALE, ZOOM_CROP_SIZE * ZOOM_SCALE),
-        Image.Resampling.NEAREST,
-    )
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
+    except OSError:
+        font = ImageFont.load_default()
+    pad = 16
+    for text, cx_frac in ((left, 0.25), (right, 0.75)):
+        cx = int(w * cx_frac)
+        tw = draw.textlength(text, font=font)
+        x = int(cx - tw / 2)
+        y = pad
+        draw.rectangle((x - 8, y - 4, x + tw + 8, y + 32), fill=(0, 0, 0))
+        draw.text((x, y), text, fill=(255, 255, 255), font=font)
     out.parent.mkdir(parents=True, exist_ok=True)
-    crop.save(out, optimize=True)
+    img.save(out, optimize=True)
+
+
+def add_single_label(bmp: Path, out: Path, label: str) -> None:
+    from PIL import Image, ImageDraw, ImageFont
+
+    w, h, px = read_bmp(bmp)
+    img = pixels_to_image(px, w, h)
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
+    except OSError:
+        font = ImageFont.load_default()
+    pad = 16
+    tw = draw.textlength(label, font=font)
+    x = int(w / 2 - tw / 2)
+    draw.rectangle((x - 8, pad - 4, x + tw + 8, pad + 32), fill=(0, 0, 0))
+    draw.text((x, pad), label, fill=(255, 255, 255), font=font)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out, optimize=True)
+
+
+def grazing_composite(d: Path) -> None:
+    from PIL import Image, ImageDraw, ImageFont
+
+    top = d / "fresnel_grazing_topdown.png"
+    low = d / "fresnel_grazing_low.png"
+    if not top.is_file() or not low.is_file():
+        print(f"Missing grazing PNGs for composite", file=sys.stderr)
+        return
+    a = Image.open(top)
+    b = Image.open(low)
+    gap = 8
+    out_w = a.width + b.width + gap
+    out_h = max(a.height, b.height)
+    canvas = Image.new("RGB", (out_w, out_h), (16, 16, 20))
+    canvas.paste(a, (0, 0))
+    canvas.paste(b, (a.width + gap, 0))
+    draw = ImageDraw.Draw(canvas)
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 26)
+    except OSError:
+        font = ImageFont.load_default()
+    labels = (
+        ("A: Top-down (transparent floor)", a.width // 2),
+        ("B: Grazing (mirror floor)", a.width + gap + b.width // 2),
+    )
+    for text, cx in labels:
+        tw = draw.textlength(text, font=font)
+        x = int(cx - tw / 2)
+        draw.rectangle((x - 6, 8, x + tw + 6, 40), fill=(0, 0, 0))
+        draw.text((x, 12), text, fill=(255, 255, 255), font=font)
+    out = d / "fresnel_grazing_compare.png"
+    canvas.save(out, optimize=True)
+    print(f"Wrote {out}")
 
 
 def main() -> int:
@@ -92,7 +152,8 @@ def main() -> int:
     stems = [
         "fresnel_cornell_compare",
         "fresnel_cornell_water_glass",
-        "fresnel_cornell_grazing",
+        "fresnel_grazing_topdown",
+        "fresnel_grazing_low",
     ]
     for stem in stems:
         bmp = d / f"{stem}.bmp"
@@ -101,10 +162,15 @@ def main() -> int:
             return 1
         save_png_from_bmp(bmp, d / f"{stem}.png")
         print(f"Wrote {d / f'{stem}.png'}")
+        if stem in LABELS:
+            left, right = LABELS[stem]
+            if stem.startswith("fresnel_grazing"):
+                add_single_label(bmp, d / f"{stem}_labeled.png", f"{left} — {right}")
+            else:
+                add_labels(bmp, d / f"{stem}_labeled.png", left, right)
+            print(f"Wrote {d / f'{stem}_labeled.png'}")
 
-    grazing = d / "fresnel_cornell_grazing.bmp"
-    zoom_rim(grazing, d / "fresnel_cornell_grazing_rim_zoom.png", GRAZING_RIM_ROI)
-    print(f"Wrote {d / 'fresnel_cornell_grazing_rim_zoom.png'}")
+    grazing_composite(d)
     return 0
 
 
