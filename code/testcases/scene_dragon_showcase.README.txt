@@ -1,7 +1,7 @@
 Dragon showcase — scene_dragon_showcase.txt
 ==========================================
 
-Three dragons on pedestals (mesh/dragon_simple.obj, decimated from dragon.obj ~3.5k faces each).
+Three dragons on pedestals (mesh/dragon_simple.obj, ~1.6k faces each, vertex-quantized from dragon_8k).
 
 | Position | Material | Effect |
 |----------|----------|--------|
@@ -15,6 +15,6 @@ Render:
       path_mis 128 gamma cuda dispersion
   python3 -c "from PIL import Image; Image.open('output/final/dragon_showcase.bmp').save('results/dragon_showcase.png')"
 
-Note: original dragon.obj has ~871k faces (negative OBJ indices); dragon_simple.obj (~3.5k faces)
+Note: original dragon.obj has ~871k faces (negative OBJ indices); dragon_simple.obj (~1.6k faces)
 keeps total CUDA triangles under 50k for GPU VRAM. dragon_8k.obj (~8.7k faces) also ships as a
 coarser alternative.

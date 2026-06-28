@@ -950,7 +950,7 @@ cp output/final/classic_mis.png results/classic_mis.png
 
 #### 2.15.5 三龙材质展台（`scene_dragon_showcase.txt`）
 
-暗色 Cornell / 博物馆底座风格：三只 `mesh/dragon.obj` 实例并排展示三种材质——**左**色散玻璃（IOR 1.52，`dispersionDelta 0.12`）、**中**金色 GGX 光泽（roughness 0.16）、**右**完美镜面。相机略俯视，天花板面光照明。
+暗色 Cornell / 博物馆底座风格：三只 `mesh/dragon_8k.obj` 实例并排展示三种材质——**左**色散玻璃（IOR 1.52，`dispersionDelta 0.12`）、**中**金色 GGX 光泽（roughness 0.16）、**右**完美镜面。相机略俯视，天花板面光照明。
 
 ```bash
 ./build/PA1-2 testcases/scene_dragon_showcase.txt output/final/dragon_showcase.bmp \
@@ -961,7 +961,7 @@ cp output/final/dragon_showcase.png results/dragon_showcase.png
 
 ![三龙材质展台](results/dragon_showcase.png)
 
-*图 2.15c：三龙展台 — `path_mis` 128 SPP，`gamma` + `cuda` + `dispersion`（左色散玻璃 / 中金 GGX / 右镜面；mesh 用 `dragon_8k.obj`）。*
+*图 2.15c：三龙展台 — `path_mis` 64 SPP，`gamma` + `cuda` + `dispersion`（左色散玻璃 / 中金 GGX / 右镜面；mesh 用 `dragon_8k.obj`）。*
 
 ---
 
@@ -985,11 +985,9 @@ cp output/final/dragon_showcase.png results/dragon_showcase.png
 | OpenMP 串行/并行 | §2.12.3 | `accel_cpu_no_omp_path32.png`、`accel_cpu_omp_path32.png` |
 | CUDA vs CPU | §2.13.3 | `accel_cpu_bunny_whitted.png`、`accel_gpu_bunny_path64.png` |
 | 抗锯齿 SPP 1/16 | §2.14.3 | 图 2.14a–b |
-| **综合展示终稿** | §2.15.3 | 图 2.15 |
+| **综合展示** | §2.15 | 图 2.15b–c（`classic_mis`、`dragon_showcase`） |
 
----
-
-## 三、补充说明
+# 三、补充说明
 
 ### 3.1 场景与材质参考
 
@@ -1032,13 +1030,13 @@ cp output/final/dragon_showcase.png results/dragon_showcase.png
 - 习题课：路径追踪、RR、NEE
 - GAMES101 Lecture 16（NEE 面积采样）
 
----
 
-## 附录：推荐运行命令
+# 附录：推荐运行命令
 
 ```bash
 cd code
 cmake --build build -j$(nproc)
+mkdir -p output/report results
 
 # —— Whitted / Path 对比（§2.6.3，点光源，Whitted vs path_nee）——
 mkdir -p output/report/whitted_path_compare
@@ -1062,32 +1060,71 @@ cp output/guiding_compare/compare_128_side_by_side.png output/guiding_compare/co
 
 # —— 纹理三面板（§2.2.3，CPU）——
 ./build/gen_textures
+mkdir -p output results
 ./build/PA1-2 testcases/scene_texture_cornell_notex.txt output/texture_cornell_notex.bmp whitted 1 gamma
 ./build/PA1-2 testcases/scene_texture_cornell.txt output/texture_cornell.bmp whitted 1 gamma
 ./build/PA1-2 testcases/scene_texture_cornell_normal.txt output/texture_cornell_normal.bmp whitted 1 gamma
+python3 -c "from PIL import Image; Image.open('output/texture_cornell_notex.bmp').save('results/texture_cornell_notex.png'); Image.open('output/texture_cornell.bmp').save('results/texture_cornell.png'); Image.open('output/texture_cornell_normal.bmp').save('results/texture_cornell_normal.png')"
 
 # —— BVH Bunny（§2.3.3）——
+mkdir -p output/bvh_compare results
 ./build/PA1-2 testcases/scene_bvh_bunny.txt output/bvh_compare/bunny_bvh_on.bmp path_nee 128 gamma cuda
 ./build/PA1-2 testcases/scene_bvh_bunny.txt output/bvh_compare/bunny_bvh_off.bmp path_nee 128 gamma cuda no_bvh
+python3 -c "from PIL import Image; Image.open('output/bvh_compare/bunny_bvh_on.bmp').save('results/bvh_bunny_on.png'); Image.open('output/bvh_compare/bunny_bvh_off.bmp').save('results/bvh_bunny_off.png')"
 
-# —— 光泽 / 色散（§2.9、§2.10）——
+# —— MIS 三模式（§2.8.3）——
+mkdir -p output/report/mis_compare results
+./build/PA1-2 testcases/scene_mis_demo.txt output/report/mis_compare/brdf_32.bmp path 32 gamma cuda
+./build/PA1-2 testcases/scene_mis_demo.txt output/report/mis_compare/nee_32.bmp path_nee 32 gamma cuda
+./build/PA1-2 testcases/scene_mis_demo.txt output/report/mis_compare/mis_32.bmp path_mis 32 gamma cuda
+python3 -c "from PIL import Image; Image.open('output/report/mis_compare/brdf_32.bmp').save('results/mis_compare_brdf_32.png'); Image.open('output/report/mis_compare/nee_32.bmp').save('results/mis_compare_nee_32.png'); Image.open('output/report/mis_compare/mis_32.bmp').save('results/mis_compare_mis_32.png')"
+
+# —— GGX 光泽（§2.9.3）——
+mkdir -p output/glossy results
 ./build/PA1-2 testcases/scene_glossy.txt output/glossy/glossy.bmp path_nee 64 gamma
-./build/PA1-2 testcases/scene_dispersion.txt output/diag/dispersion.bmp path_nee 128 gamma dispersion
+python3 -c "from PIL import Image; Image.open('output/glossy/glossy.bmp').save('results/glossy.png')"
 
-# —— Gamma / OpenMP / CUDA / AA（§2.11–§2.14）——
-./build/PA1-2 testcases/scene_whitted.txt output/report/gamma_before.bmp whitted 1 cuda
-./build/PA1-2 testcases/scene_whitted.txt output/report/gamma_after.bmp whitted 1 gamma cuda
-./build/PA1-2 testcases/scene_path.txt output/report/omp_serial.bmp path_nee 32 gamma
-./build/PA1-2 testcases/scene_path.txt output/report/omp_parallel.bmp path_nee 32 gamma omp
-./build/PA1-2 testcases/scene_bvh_bunny.txt output/report/bunny_w_cpu.bmp whitted 1 gamma omp
-./build/PA1-2 testcases/scene_bvh_bunny.txt output/report/bunny_w_cuda.bmp whitted 1 gamma cuda
+# —— 色散（§2.10.3）——
+mkdir -p output/diag results
+./build/PA1-2 testcases/scene_dispersion.txt output/diag/dispersion_before.bmp path_nee 128 gamma
+./build/PA1-2 testcases/scene_dispersion.txt output/diag/dispersion_after.bmp path_nee 128 gamma dispersion
+python3 -c "from PIL import Image; Image.open('output/diag/dispersion_before.bmp').save('results/dispersion_before.png'); Image.open('output/diag/dispersion_after.bmp').save('results/dispersion_after.png')"
+
+# —— Gamma（§2.11.3）——
+./build/PA1-2 testcases/scene_path.txt output/report/path_nee_nogamma512.bmp path_nee 512 omp
+./build/PA1-2 testcases/scene_path.txt output/report/path_nee_512.bmp path_nee 512 gamma omp
+python3 -c "from PIL import Image; Image.open('output/report/path_nee_nogamma512.bmp').save('results/path_nee_nogamma512.png'); Image.open('output/report/path_nee_512.bmp').save('results/path_nee_512.png')"
+
+# —— OpenMP（§2.12.3）——
+./build/PA1-2 testcases/scene_path.txt output/report/cpu_no_omp_path32.bmp path_nee 32 gamma
+./build/PA1-2 testcases/scene_path.txt output/report/cpu_omp_path32.bmp path_nee 32 gamma omp
+./build/PA1-2 testcases/scene_whitted.txt output/report/cpu_no_omp_whitted.bmp whitted 1 gamma
+./build/PA1-2 testcases/scene_whitted.txt output/report/cpu_omp_whitted.bmp whitted 1 gamma omp
+python3 -c "from PIL import Image; Image.open('output/report/cpu_no_omp_path32.bmp').save('results/accel_cpu_no_omp_path32.png'); Image.open('output/report/cpu_omp_path32.bmp').save('results/accel_cpu_omp_path32.png'); Image.open('output/report/cpu_no_omp_whitted.bmp').save('results/accel_cpu_no_omp_whitted.png'); Image.open('output/report/cpu_omp_whitted.bmp').save('results/accel_cpu_omp_whitted.png')"
+
+# —— CUDA vs CPU（§2.13.3）——
+./build/PA1-2 testcases/scene_bvh_bunny.txt output/report/cpu_bunny_whitted.bmp whitted 1 gamma omp
+./build/PA1-2 testcases/scene_bvh_bunny.txt output/report/gpu_bunny_whitted.bmp whitted 1 gamma cuda
+./build/PA1-2 testcases/scene_bvh_bunny.txt output/report/cpu_bunny_path64.bmp path_nee 64 gamma omp
+./build/PA1-2 testcases/scene_bvh_bunny.txt output/report/gpu_bunny_path64.bmp path_nee 64 gamma cuda
+python3 -c "from PIL import Image; Image.open('output/report/cpu_bunny_whitted.bmp').save('results/accel_cpu_bunny_whitted.png'); Image.open('output/report/gpu_bunny_whitted.bmp').save('results/accel_gpu_bunny_whitted.png'); Image.open('output/report/cpu_bunny_path64.bmp').save('results/accel_cpu_bunny_path64.png'); Image.open('output/report/gpu_bunny_path64.bmp').save('results/accel_gpu_bunny_path64.png')"
+
+# —— 抗锯齿（§2.14.3）——
 ./build/PA1-2 testcases/scene_whitted.txt output/report/aa_before.bmp whitted 1 cuda
 ./build/PA1-2 testcases/scene_whitted.txt output/report/aa_after.bmp whitted 16 cuda
+python3 -c "
+from PIL import Image
+for name in ('aa_before', 'aa_after'):
+    img = Image.open(f'output/report/{name}.bmp')
+    img.save(f'results/{name}.png')
+    crop = img.crop((400, 320, 560, 480))
+    crop.resize((crop.width * 4, crop.height * 4), Image.NEAREST).save(f'results/{name}_zoom.png')
+"
 
-# —— 综合展示终稿（§2.15）——
-mkdir -p textures output/final results
-./build/gen_textures
-./build/PA1-2 testcases/scene_final_simple.txt output/final/final_simple.bmp path_mis 64 gamma omp dispersion
-python3 -c "from PIL import Image; Image.open('output/final/final_simple.bmp').save('output/final/final_simple.png')"
-cp output/final/final_simple.png results/final_simple.png
+# —— 综合展示（§2.15）——
+mkdir -p output/final results
+./build/PA1-2 testcases/scene_classic_mis.txt output/final/classic_mis.bmp path_mis 15000 gamma cuda dispersion
+python3 -c "from PIL import Image; Image.open('output/final/classic_mis.bmp').save('results/classic_mis.png')"
+./build/PA1-2 testcases/scene_dragon_showcase.txt output/final/dragon_showcase.bmp path_mis 64 gamma cuda dispersion
+python3 -c "from PIL import Image; Image.open('output/final/dragon_showcase.bmp').save('results/dragon_showcase.png')"
 ```
