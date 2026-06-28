@@ -1756,7 +1756,12 @@ __device__ bool isInShadow(const GpuSceneDevice &scene, float3 p, float3 N, floa
     if (hit.t >= maxT - kShadowEps) {
         return false;
     }
-    if (scene.materials[hit.matId < 0 || hit.matId >= scene.numMaterials ? 0 : hit.matId].type == GPU_MAT_REFRACT) {
+    const GpuMaterial &blocker =
+            scene.materials[hit.matId < 0 || hit.matId >= scene.numMaterials ? 0 : hit.matId];
+    if (blocker.type == GPU_MAT_EMISSIVE) {
+        return false;
+    }
+    if (blocker.type == GPU_MAT_REFRACT) {
         return false;
     }
     return true;

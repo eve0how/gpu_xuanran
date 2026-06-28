@@ -42,6 +42,46 @@ struct MisIndirectCtx {
     WardMaterial *wardMat = nullptr;
 };
 
+namespace {
+constexpr float AREA_LIGHT_VERT_EPS = 1e-4f;
+
+bool areaLightVerticesEqual(const Vector3f &a, const Vector3f &b) {
+    return (a - b).length() < AREA_LIGHT_VERT_EPS;
+}
+
+int countSharedAreaLightVertices(const AreaLight *a, const AreaLight *a2) {
+    const Vector3f va[3] = {a->getVertex0(), a->getVertex1(), a->getVertex2()};
+    const Vector3f vb[3] = {a2->getVertex0(), a2->getVertex1(), a2->getVertex2()};
+    int shared = 0;
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            if (areaLightVerticesEqual(va[i], vb[j])) {
+                ++shared;
+                break;
+            }
+        }
+    }
+    return shared;
+}
+
+// Path-tracing scenes split emissive quads into two AreaLight triangles; Whitted Phong
+// must not sum both or direct light is doubled (ceiling ghosting / blow-out).
+bool isDuplicateSplitAreaLight(const SceneParser &scene, int lightIndex) {
+    auto *al = dynamic_cast<AreaLight *>(scene.getLight(lightIndex));
+    if (!al) {
+        return false;
+    }
+    for (int j = 0; j < lightIndex; ++j) {
+        if (auto *prev = dynamic_cast<AreaLight *>(scene.getLight(j))) {
+            if (countSharedAreaLightVertices(al, prev) >= 2) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+}  // namespace
+
 class RayTracer {
 public:
     RayTracer(const SceneParser &scene, RenderMode mode = RenderMode::WHITTED, unsigned int seed = 0,
@@ -1215,6 +1255,9 @@ private:
         Vector3f V = ray.getDirection().normalized();
         Vector3f N = glossy->getShadingNormal(hit, V);
         for (int i = 0; i < scene.getNumLights(); ++i) {
+            if (isDuplicateSplitAreaLight(scene, i)) {
+                continue;
+            }
             Light *light = scene.getLight(i);
             if (isInShadow(hitPoint, N, light)) {
                 continue;
@@ -1232,6 +1275,9 @@ private:
         Vector3f V = ray.getDirection().normalized();
         Vector3f N = ward->getShadingNormal(hit, V);
         for (int i = 0; i < scene.getNumLights(); ++i) {
+            if (isDuplicateSplitAreaLight(scene, i)) {
+                continue;
+            }
             Light *light = scene.getLight(i);
             if (isInShadow(hitPoint, N, light)) {
                 continue;
@@ -1253,6 +1299,9 @@ private:
         Vector3f V = ray.getDirection().normalized();
         Vector3f N = mat->getShadingNormal(hit, V);
         for (int i = 0; i < scene.getNumLights(); ++i) {
+            if (isDuplicateSplitAreaLight(scene, i)) {
+                continue;
+            }
             Light *light = scene.getLight(i);
             if (isInShadow(hitPoint, N, light)) {
                 continue;
@@ -1283,6 +1332,9 @@ private:
         }
 
         MaterialType blocker = shadowHit.getMaterial()->getType();
+        if (blocker == MaterialType::EMISSIVE) {
+            return false;
+        }
         if (blocker == MaterialType::REFRACT) {
             return false;
         }
