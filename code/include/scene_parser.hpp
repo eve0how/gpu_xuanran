@@ -1,6 +1,7 @@
 #ifndef SCENE_PARSER_H
 #define SCENE_PARSER_H
 
+// PA1 已有代码
 #include <cassert>
 #include <vecmath.h>
 

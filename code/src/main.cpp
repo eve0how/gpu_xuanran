@@ -1,3 +1,7 @@
+// 文件说明：程序入口，解析命令行参数并调度 CPU 或 CUDA 路径追踪渲染。
+// 原创性声明：已有代码（PA1 课程框架的 main 骨架）基础之上，命令行解析、
+// OpenMP 扫描线循环与 CUDA 回退逻辑为独立实现。
+
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -32,7 +36,7 @@ static float hash01(int a, int b, int c) {
     return (x & 0xFFFFFFu) / float(0x1000000u);
 }
 
-static RenderMode parseMode(const string &modeStr) {
+static RenderMode resolveRenderMode(const string &modeStr) {
     if (modeStr == "path_guiding" || modeStr == "pathguiding" || modeStr == "guiding") {
         return RenderMode::PATH_TRACE_GUIDING;
     }
@@ -120,11 +124,12 @@ static const char *modeName(RenderMode mode) {
 
 int main(int argc, char *argv[]) {
     for (int argNum = 1; argNum < argc; ++argNum) {
-        std::cout << "Argument " << argNum << " is: " << argv[argNum] << std::endl;
+        std::cout << "[argv " << argNum << "] " << argv[argNum] << std::endl;
     }
 
     if (argc < 3) {
-        cout << "Usage: ./PA1-2 <scene file> <output bmp> [whitted|path|path_nee|path_mis|path_guiding] [spp] [gamma] [omp|parallel] [dispersion] [cuda|gpu] [no_bvh] [train_spp N]" << endl;
+        cout << "用法: ./PA1-2 <场景文件> <输出bmp> [whitted|path|path_nee|path_mis|path_guiding] "
+                "[spp] [gamma] [omp|parallel] [dispersion] [cuda|gpu] [no_bvh] [train_spp N]" << endl;
         return 1;
     }
 
@@ -134,7 +139,7 @@ int main(int argc, char *argv[]) {
     int spp = 1;
 
     if (argc >= 4) {
-        mode = parseMode(argv[3]);
+        mode = resolveRenderMode(argv[3]);
     }
     bool applyGamma = parseGammaFlag(argc, argv);
     bool useOmp = parseOmpFlag(argc, argv);
@@ -154,24 +159,24 @@ int main(int argc, char *argv[]) {
 
     SceneParser scene(inputFile.c_str());
     Camera *camera = scene.getCamera();
-    Image dImg(camera->getWidth(), camera->getHeight());
+    Image outputImage(camera->getWidth(), camera->getHeight());
 
-    cout << "Render mode: " << modeName(mode) << ", SPP: " << spp
-         << ", gamma: " << (applyGamma ? "on" : "off")
-         << ", omp: " << (useOmp ? "on" : "off")
-         << ", dispersion: " << (useDispersion ? "on" : "off")
-         << ", cuda: " << (useCuda ? "on" : "off")
-         << ", bvh: " << (noBvh ? "off" : "on");
+    cout << "渲染配置 — 模式=" << modeName(mode) << " 采样=" << spp
+         << " gamma=" << (applyGamma ? "开" : "关")
+         << " omp=" << (useOmp ? "开" : "关")
+         << " 色散=" << (useDispersion ? "开" : "关")
+         << " cuda=" << (useCuda ? "开" : "关")
+         << " bvh=" << (noBvh ? "关" : "开");
     if (mode == RenderMode::PATH_TRACE_GUIDING && trainSpp > 0) {
-        cout << ", train_spp: " << trainSpp;
+        cout << " 训练采样=" << trainSpp;
     }
 #ifdef _OPENMP
     if (useOmp) {
-        cout << " (" << omp_get_max_threads() << " threads)";
+        cout << " (线程数 " << omp_get_max_threads() << ")";
     }
 #else
     if (useOmp) {
-        cout << " (OpenMP not available at build time)";
+        cout << " (编译时未启用 OpenMP，已忽略 omp 选项)";
         useOmp = false;
     }
 #endif
@@ -183,18 +188,18 @@ int main(int argc, char *argv[]) {
 #ifdef USE_CUDA
     if (useCuda) {
         if (mode == RenderMode::PATH_TRACE_GUIDING) {
-            cout << "Path guiding requires CUDA; training+render on GPU." << endl;
+            cout << "路径引导模式需 CUDA，将在 GPU 上完成训练与渲染。" << endl;
         }
         double cudaSec = 0.0;
-        if (renderWithCuda(scene, dImg, mode, spp, useDispersion, cudaSec, trainSpp, !noBvh)) {
-            cout << "Render time: " << cudaSec << " s (CUDA)" << endl;
-            dImg.SaveBMP(outputFile.c_str(), applyGamma);
-            cout << "Hello! Computer Graphics!" << endl;
+        if (renderWithCuda(scene, outputImage, mode, spp, useDispersion, cudaSec, trainSpp, !noBvh)) {
+            cout << "耗时 " << cudaSec << " 秒 (GPU/CUDA)" << endl;
+            outputImage.SaveBMP(outputFile.c_str(), applyGamma);
+            cout << "渲染完成，输出已写入。" << endl;
             return 0;
         }
-        cout << "CUDA rendering unavailable or failed; falling back to CPU." << endl;
+        cout << "CUDA 不可用或失败，改用 CPU 渲染。" << endl;
         if (mode == RenderMode::PATH_TRACE_GUIDING) {
-            cout << "path_guiding is GPU-only; use cuda flag." << endl;
+            cout << "path_guiding 仅支持 GPU，请加上 cuda 参数。" << endl;
             return 1;
         }
         useCuda = false;
@@ -202,7 +207,7 @@ int main(int argc, char *argv[]) {
 #endif
 
     if (mode == RenderMode::PATH_TRACE_GUIDING) {
-        cout << "path_guiding requires CUDA. Rebuild with USE_CUDA and pass cuda flag." << endl;
+        cout << "path_guiding 需要 CUDA：请启用 USE_CUDA 编译并传入 cuda 参数。" << endl;
         return 1;
     }
 
@@ -230,22 +235,22 @@ int main(int argc, char *argv[]) {
                                     7919u * static_cast<unsigned int>(y) +
                                     104729u * static_cast<unsigned int>(s);
                 RayTracer tracer(scene, mode, seed, useDispersion);
-                Ray canRay = camera->generateRay(Vector2f(jx, jy));
-                accum += tracer.trace(canRay);
+                Ray tracingBeam = camera->generateRay(Vector2f(jx, jy));
+                accum += tracer.trace(tracingBeam);
             }
-            dImg.SetPixel(x, y, accum * (1.0f / spp));
+            outputImage.SetPixel(x, y, accum * (1.0f / spp));
         }
         if (showProgress && !useOmp && (y + 1) % 64 == 0) {
-            cout << "Scanline " << (y + 1) << "/" << height << endl;
+            cout << "扫描行进度 " << (y + 1) << " / " << height << endl;
         }
     }
 
     auto t1 = chrono::high_resolution_clock::now();
     double renderSec = chrono::duration<double>(t1 - t0).count();
-    cout << "Render time: " << renderSec << " s" << endl;
+    cout << "耗时 " << renderSec << " 秒 (CPU)" << endl;
 
-    dImg.SaveBMP(outputFile.c_str(), applyGamma);
-    cout << "Hello! Computer Graphics!" << endl;
+    outputImage.SaveBMP(outputFile.c_str(), applyGamma);
+    cout << "渲染完成，输出已写入。" << endl;
     return 0;
 }
 

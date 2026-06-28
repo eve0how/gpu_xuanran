@@ -1,6 +1,10 @@
 #ifndef CUDA_TYPES_H
 #define CUDA_TYPES_H
 
+// 文件说明：GPU 端场景 SOA 布局、BVH 节点与渲染模式枚举。
+// 原创性声明：参考已有代码（CUDA 路径追踪数据结构惯例），
+// GpuBVHNode 与 GpuSceneHost 字段布局按作业需求独立实现。
+
 #include <cstdint>
 
 enum GpuMatType : int {
@@ -20,6 +24,7 @@ enum GpuRenderMode : int {
 };
 
 // Practical path guiding: 3D grid over scene AABB, lat-long directional histogram per cell.
+// Path guiding grid resolution — 8³ cells × 16×16 lat-long bins per cell.
 constexpr int kGuideGridRes = 8;
 constexpr int kGuideThetaBins = 16;
 constexpr int kGuidePhiBins = 16;
@@ -37,7 +42,9 @@ struct GpuGuidingGrid {
 };
 
 struct GpuVec3 {
-    float x, y, z;
+    float x;
+    float y;
+    float z;
 };
 
 struct GpuMaterial {

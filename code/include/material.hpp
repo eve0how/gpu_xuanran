@@ -1,6 +1,10 @@
 #ifndef MATERIAL_H
 #define MATERIAL_H
 
+// 文件说明：材质类型与 Cook-Torrance BRDF、Phong 着色接口。
+// 原创性声明：PA1 已有代码为基础，
+// BRDF 求值与各类 Material 子类扩展为独立实现。
+
 #include <cassert>
 #include <cmath>
 #include <algorithm>
@@ -32,9 +36,9 @@ struct CookTorranceBRDF {
     static float ggxD(const Vector3f &n, const Vector3f &h, float roughness) {
         float alpha = alphaFromRoughness(roughness);
         float alpha2 = alpha * alpha;
-        float nh = std::max(0.0f, Vector3f::dot(n, h));
-        float cos2 = nh * nh;
-        float denom = cos2 * (alpha2 - 1.0f) + 1.0f;
+        float cosNH = std::max(0.0f, Vector3f::dot(n, h));
+        float cosNH2 = cosNH * cosNH;
+        float denom = cosNH2 * (alpha2 - 1.0f) + 1.0f;
         return alpha2 / (CT_PI * denom * denom);
     }
 

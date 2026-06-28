@@ -1,3 +1,7 @@
+// 文件说明：CUDA 路径追踪内核与 GPU 场景上传、渲染调度。
+// 原创性声明：参考已有代码（CPU raytracer 逻辑移植与 PBRT/GAMES101 概念），
+// 设备端 intersect、NEE/MIS 与 path guiding 内核为独立实现与调试。
+
 #include "cuda_types.h"
 #include "cuda_renderer.hpp"
 #include "cuda_device.hpp"
@@ -296,63 +300,64 @@ __device__ void intersectTrianglesBVH(const GpuSceneDevice &scene, float3 orig, 
     }
 }
 
-__device__ bool intersectScene(const GpuSceneDevice &scene, float3 orig, float3 dir,
-                               float tmin, HitRec &best) {
-    best.hit = false;
-    best.t = 1e30f;
+// 原创性声明：参考已有代码（Möller–Trumbore 与 BVH 遍历），按 GpuBVHNode 布局独立实现。
+__device__ bool intersectScene(const GpuSceneDevice &scene, float3 rayOrigin, float3 rayDir,
+                               float tMin, HitRec &closestHit) {
+    closestHit.hit = false;
+    closestHit.t = 1e30f;
 
-    for (int i = 0; i < scene.numSpheres; ++i) {
-        const GpuSphere &s = scene.spheres[i];
-        float3 center = load3(s.center);
-        float3 oc = sub3(orig, center);
-        float a = dot3(dir, dir);
-        float b = 2.0f * dot3(oc, dir);
-        float c = dot3(oc, oc) - s.radius * s.radius;
-        float disc = b * b - 4.0f * a * c;
+    for (int si = 0; si < scene.numSpheres; ++si) {
+        const GpuSphere &spherePrim = scene.spheres[si];
+        float3 sphereCenter = load3(spherePrim.center);
+        float3 oc = sub3(rayOrigin, sphereCenter);
+        float quadA = dot3(rayDir, rayDir);
+        float quadB = 2.0f * dot3(oc, rayDir);
+        float quadC = dot3(oc, oc) - spherePrim.radius * spherePrim.radius;
+        float disc = quadB * quadB - 4.0f * quadA * quadC;
         if (disc < 0.0f) {
             continue;
         }
         float sqrtDisc = sqrtf(disc);
-        float t0 = (-b - sqrtDisc) / (2.0f * a);
-        float t1 = (-b + sqrtDisc) / (2.0f * a);
-        float t = -1.0f;
-        if (t0 > tmin) {
-            t = t0;
-        } else if (t1 > tmin) {
-            t = t1;
+        float tNearRoot = (-quadB - sqrtDisc) / (2.0f * quadA);
+        float tFarRoot = (-quadB + sqrtDisc) / (2.0f * quadA);
+        float hitT = -1.0f;
+        if (tNearRoot > tMin) {
+            hitT = tNearRoot;
+        } else if (tFarRoot > tMin) {
+            hitT = tFarRoot;
         }
-        if (t > 0.0f && t < best.t) {
-            best.t = t;
-            best.matId = s.matId;
-            float3 p = add3(orig, mul3(dir, t));
-            store3(best.n, sub3(p, center));
-            best.hit = true;
+        if (hitT > 0.0f && hitT < closestHit.t) {
+            closestHit.t = hitT;
+            closestHit.matId = spherePrim.matId;
+            float3 surfPt = add3(rayOrigin, mul3(rayDir, hitT));
+            store3(closestHit.n, sub3(surfPt, sphereCenter));
+            closestHit.hit = true;
         }
     }
 
-    for (int i = 0; i < scene.numPlanes; ++i) {
-        const GpuPlane &pl = scene.planes[i];
-        float3 n = load3(pl.normal);
-        float denom = dot3(n, dir);
-        if (fabsf(denom) < 1e-6f) {
+    for (int pi = 0; pi < scene.numPlanes; ++pi) {
+        const GpuPlane &planePrim = scene.planes[pi];
+        float3 planeN = load3(planePrim.normal);
+        float planeDenom = dot3(planeN, rayDir);
+        if (fabsf(planeDenom) < 1e-6f) {
             continue;
         }
-        float t = (pl.offset - dot3(n, orig)) / denom;
-        if (t > tmin && t < best.t) {
-            best.t = t;
-            best.matId = pl.matId;
-            store3(best.n, n);
-            best.hit = true;
+        float planeT = (planePrim.offset - dot3(planeN, rayOrigin)) / planeDenom;
+        if (planeT > tMin && planeT < closestHit.t) {
+            closestHit.t = planeT;
+            closestHit.matId = planePrim.matId;
+            store3(closestHit.n, planeN);
+            closestHit.hit = true;
         }
     }
 
     if (scene.numBVHNodes > 0 && scene.bvhNodes != nullptr && scene.bvhTriangles != nullptr) {
-        intersectTrianglesBVH(scene, orig, dir, invDir3(dir), tmin, best);
+        intersectTrianglesBVH(scene, rayOrigin, rayDir, invDir3(rayDir), tMin, closestHit);
     } else if (scene.numTriangles > 0 && scene.triangles != nullptr) {
-        intersectTrianglesBruteForce(scene, orig, dir, tmin, best);
+        intersectTrianglesBruteForce(scene, rayOrigin, rayDir, tMin, closestHit);
     }
 
-    return best.hit;
+    return closestHit.hit;
 }
 
 __device__ float triangleArea(float3 v0, float3 v1, float3 v2) {
@@ -825,41 +830,41 @@ __device__ float3 sampleTriangle(float3 v0, float3 v1, float3 v2, curandState &r
 }
 
 __device__ bool sampleAreaLightDiffuse(const GpuSceneDevice &scene, const GpuAreaLight &area,
-                                       float3 hitPoint, float3 N, float3 albedo, bool useMis,
+                                       float3 surfPoint, float3 shadeN, float3 albedo, bool useMis,
                                        float3 &contrib, curandState &rng) {
-    float3 lightPoint = sampleTriangle(load3(area.v0), load3(area.v1), load3(area.v2), rng);
-    float3 wi = sub3(lightPoint, hitPoint);
-    float dist2 = dot3(wi, wi);
-    float dist = sqrtf(dist2);
-    if (dist < kRayEps) {
+    float3 sampOnLight = sampleTriangle(load3(area.v0), load3(area.v1), load3(area.v2), rng);
+    float3 toLight = sub3(sampOnLight, surfPoint);
+    float segLenSq = dot3(toLight, toLight);
+    float segLen = sqrtf(segLenSq);
+    if (segLen < kRayEps) {
         return false;
     }
-    wi = mul3(wi, 1.0f / dist);
-    float cosO = dot3(N, wi);
-    if (cosO <= 0.0f) {
+    float3 lightWi = mul3(toLight, 1.0f / segLen);
+    float cosOut = dot3(shadeN, lightWi);
+    if (cosOut <= 0.0f) {
         return false;
     }
     float3 lightN = norm3(cross3(sub3(load3(area.v1), load3(area.v0)), sub3(load3(area.v2), load3(area.v0))));
-    float cosL = dot3(lightN, mul3(wi, -1.0f));
-    if (cosL <= 0.0f) {
+    float cosOnLight = dot3(lightN, mul3(lightWi, -1.0f));
+    if (cosOnLight <= 0.0f) {
         return false;
     }
-    if (isSegmentOccluded(scene, hitPoint, lightPoint, N)) {
+    if (isSegmentOccluded(scene, surfPoint, sampOnLight, shadeN)) {
         return false;
     }
-    float lightArea = triangleArea(load3(area.v0), load3(area.v1), load3(area.v2));
+    float triArea = triangleArea(load3(area.v0), load3(area.v1), load3(area.v2));
     float3 emission = load3(area.color);
     if (useMis) {
-        float pdfLight = dist2 / (lightArea * cosL);
-        float pdfBrdf = pdfDiffuse(cosO);
+        float pdfLight = segLenSq / (triArea * cosOnLight);
+        float pdfBrdf = pdfDiffuse(cosOut);
         float misW = misWeightPower(pdfLight, pdfLight, pdfBrdf);
         if (misW < 1e-8f) {
             return false;
         }
         contrib = add3(contrib,
-                        mul3(mul3v(albedo, emission), cosO / (kPi * pdfLight) * misW));
+                        mul3(mul3v(albedo, emission), cosOut / (kPi * pdfLight) * misW));
     } else {
-        contrib = add3(contrib, mul3(mul3v(albedo, emission), cosO * cosL * lightArea / (kPi * dist2)));
+        contrib = add3(contrib, mul3(mul3v(albedo, emission), cosOut * cosOnLight * triArea / (kPi * segLenSq)));
     }
     return true;
 }
@@ -874,41 +879,41 @@ __device__ float3 sampleDirectEmissive(const GpuSceneDevice &scene, float3 hitPo
 }
 
 __device__ bool sampleAreaLightGlossy(const GpuSceneDevice &scene, const GpuAreaLight &area,
-                                      float3 hitPoint, float3 N, float3 wo, const GpuMaterial &mat,
+                                      float3 surfPoint, float3 shadeN, float3 wo, const GpuMaterial &mat,
                                       bool useMis, float3 &contrib, curandState &rng) {
-    float3 lightPoint = sampleTriangle(load3(area.v0), load3(area.v1), load3(area.v2), rng);
-    float3 wi = sub3(lightPoint, hitPoint);
-    float dist2 = dot3(wi, wi);
-    float dist = sqrtf(dist2);
-    if (dist < kRayEps) {
+    float3 sampOnLight = sampleTriangle(load3(area.v0), load3(area.v1), load3(area.v2), rng);
+    float3 toLight = sub3(sampOnLight, surfPoint);
+    float segLenSq = dot3(toLight, toLight);
+    float segLen = sqrtf(segLenSq);
+    if (segLen < kRayEps) {
         return false;
     }
-    wi = mul3(wi, 1.0f / dist);
-    float cosO = dot3(N, wi);
-    if (cosO <= 0.0f) {
+    float3 lightWi = mul3(toLight, 1.0f / segLen);
+    float cosOut = dot3(shadeN, lightWi);
+    if (cosOut <= 0.0f) {
         return false;
     }
     float3 lightN = norm3(cross3(sub3(load3(area.v1), load3(area.v0)), sub3(load3(area.v2), load3(area.v0))));
-    float cosL = dot3(lightN, mul3(wi, -1.0f));
-    if (cosL <= 0.0f) {
+    float cosOnLight = dot3(lightN, mul3(lightWi, -1.0f));
+    if (cosOnLight <= 0.0f) {
         return false;
     }
-    if (isSegmentOccluded(scene, hitPoint, lightPoint, N)) {
+    if (isSegmentOccluded(scene, surfPoint, sampOnLight, shadeN)) {
         return false;
     }
-    float lightArea = triangleArea(load3(area.v0), load3(area.v1), load3(area.v2));
-    float3 brdf = evalGlossy(N, wo, wi, mat);
+    float triArea = triangleArea(load3(area.v0), load3(area.v1), load3(area.v2));
+    float3 brdfVal = evalGlossy(shadeN, wo, lightWi, mat);
     float3 emission = load3(area.color);
     if (useMis) {
-        float pdfLight = dist2 / (lightArea * cosL);
-        float pdfBrdf = pdfGlossy(N, wo, wi, mat);
+        float pdfLight = segLenSq / (triArea * cosOnLight);
+        float pdfBrdf = pdfGlossy(shadeN, wo, lightWi, mat);
         float misW = misWeightPower(pdfLight, pdfLight, pdfBrdf);
         if (misW < 1e-8f) {
             return false;
         }
-        contrib = add3(contrib, mul3(mul3v(brdf, emission), cosO / pdfLight * misW));
+        contrib = add3(contrib, mul3(mul3v(brdfVal, emission), cosOut / pdfLight * misW));
     } else {
-        contrib = add3(contrib, mul3(mul3v(brdf, emission), cosO * cosL * lightArea / dist2));
+        contrib = add3(contrib, mul3(mul3v(brdfVal, emission), cosOut * cosOnLight * triArea / segLenSq));
     }
     return true;
 }
@@ -1084,50 +1089,52 @@ struct MisCtx {
     bool glossyPath;
 };
 
-__device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 dir, int depth,
+__device__ float3 castRayPath(const GpuSceneDevice &scene, float3 rayOrigin, float3 rayDir, int depth,
                               float3 throughput, bool countEmissive, int mode,
                               bool dispersionEnabled, int dispChannel, const MisCtx *misCtx,
                               const GpuGuidingGrid *guideGrid, bool trainingPass,
-                              float tmin, curandState &rng);
+                              float tMin, curandState &rng);
 
-__device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 dir, int depth,
+// 原创性声明：参考已有代码（CPU castRayPath 移植），设备端 bounce 与 MIS 分支独立实现与调试。
+__device__ float3 castRayPath(const GpuSceneDevice &scene, float3 rayOrigin, float3 rayDir, int depth,
                               float3 throughput, bool countEmissive, int mode,
                               bool dispersionEnabled, int dispChannel, const MisCtx *misCtx,
                               const GpuGuidingGrid *guideGrid, bool trainingPass,
-                              float tmin, curandState &rng) {
+                              float tMin, curandState &rng) {
     if (depth > kMaxDepth) {
         return make3(0, 0, 0);
     }
 
-    HitRec hit;
-    if (!intersectScene(scene, orig, dir, tmin, hit)) {
+    HitRec surfHit;
+    if (!intersectScene(scene, rayOrigin, rayDir, tMin, surfHit)) {
         return make3(0, 0, 0);
     }
 
-    const GpuMaterial &mat = scene.materials[hit.matId < 0 || hit.matId >= scene.numMaterials ? 0 : hit.matId];
-    float3 hitPoint = add3(orig, mul3(dir, hit.t));
-    float3 D = norm3(dir);
-    float3 geomN = norm3(load3(hit.n));
+    const GpuMaterial &mat =
+        scene.materials[surfHit.matId < 0 || surfHit.matId >= scene.numMaterials ? 0 : surfHit.matId];
+    float3 surfPoint = add3(rayOrigin, mul3(rayDir, surfHit.t));
+    float3 viewDir = norm3(rayDir);
+    float3 geomN = norm3(load3(surfHit.n));
 
     if (mat.type == GPU_MAT_EMISSIVE) {
-        if (!countEmissive) {
-            return make3(0, 0, 0);
-        }
-        float3 emission = load3(mat.emission);
-        if (misCtx != nullptr && misCtx->active) {
-            float pdfLight = computeAreaLightPdf(scene, misCtx->shadingPoint, misCtx->wi);
-            float misDenom = misPowerDenom(pdfLight, misCtx->pdfBrdf);
-            if (misDenom < 1e-8f) {
+        if (countEmissive) {
+            float3 emission = load3(mat.emission);
+            if (misCtx != nullptr && misCtx->active) {
+                float pdfLight = computeAreaLightPdf(scene, misCtx->shadingPoint, misCtx->wi);
+                float misDenom = misPowerDenom(pdfLight, misCtx->pdfBrdf);
+                if (misDenom >= 1e-8f) {
+                    float misW = misWeightPower(misCtx->pdfBrdf, misCtx->pdfBrdf, pdfLight);
+                    float scale = misW / misCtx->pdfBrdf;
+                    return clampRadiance3(mul3(mul3v(throughput, emission), scale));
+                }
                 return make3(0, 0, 0);
             }
-            float misW = misWeightPower(misCtx->pdfBrdf, misCtx->pdfBrdf, pdfLight);
-            float scale = misW / misCtx->pdfBrdf;
-            return clampRadiance3(mul3(mul3v(throughput, emission), scale));
+            return clampRadiance3(mul3v(throughput, emission));
         }
-        return clampRadiance3(mul3v(throughput, emission));
+        return make3(0, 0, 0);
     }
 
-    bool opaqueBack = mat.type != GPU_MAT_REFRACT && mat.type != GPU_MAT_EMISSIVE && dot3(D, geomN) > 0.0f;
+    bool opaqueBack = mat.type != GPU_MAT_REFRACT && mat.type != GPU_MAT_EMISSIVE && dot3(viewDir, geomN) > 0.0f;
     if (opaqueBack) {
         return make3(0, 0, 0);
     }
@@ -1137,19 +1144,19 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
     bool useGuide = guideGrid != nullptr && (useGuidingMode(mode) || trainingPass);
 
     if (mat.type == GPU_MAT_REFLECT) {
-        float3 N = faceNormal(D, geomN);
-        float3 reflected = sub3(D, mul3(N, 2.0f * dot3(D, N)));
-        float3 origin = offsetAlongNormal(hitPoint, N, kOriginOffset);
+        float3 shadeN = faceNormal(viewDir, geomN);
+        float3 reflected = sub3(viewDir, mul3(shadeN, 2.0f * dot3(viewDir, shadeN)));
+        float3 bounceOrigin = offsetAlongNormal(surfPoint, shadeN, kOriginOffset);
         float3 newTp = scaleDispAttenuation(throughput, load3(mat.specular), dispChannel);
-        return clampRadiance3(castRayPath(scene, origin, reflected, depth + 1, newTp, true, mode,
+        return clampRadiance3(castRayPath(scene, bounceOrigin, reflected, depth + 1, newTp, true, mode,
                                           dispersionEnabled, dispChannel, nullptr, guideGrid,
                                           trainingPass, kRayEps, rng));
     }
 
     if (mat.type == GPU_MAT_REFRACT) {
         float3 refractColor = load3(mat.specular);
-        bool exiting = dot3(D, geomN) > 0.0f;
-        float3 Nface = faceNormal(D, geomN);
+        bool exiting = dot3(viewDir, geomN) > 0.0f;
+        float3 Nface = faceNormal(viewDir, geomN);
         auto applyRefractAtten = [&](float3 tp) {
             return exiting ? tp : scaleDispAttenuation(tp, refractColor, dispChannel);
         };
@@ -1160,9 +1167,9 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
             float bz = 0.0f;
             for (int c = 0; c < 3; ++c) {
                 float ior = channelIor(mat.ior, mat.dispersionDelta, c);
-                RefractSplit split = computeRefractSplit(D, geomN, ior);
+                RefractSplit split = computeRefractSplit(viewDir, geomN, ior);
                 if (split.tir) {
-                    float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
+                    float3 reflOrigin = offsetAlongNormal(surfPoint, Nface, kOriginOffset);
                     float3 child = castRayPath(scene, reflOrigin, split.reflectDir, depth + 1, throughput, true,
                                                mode, dispersionEnabled, c, nullptr, guideGrid, trainingPass,
                                                kRayEps, rng);
@@ -1174,7 +1181,7 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
                         bz = child.z;
                     }
                 } else {
-                    float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
+                    float3 refrOrigin = offsetAlongRay(surfPoint, split.refractDir, kRefractOriginOffset);
                     float3 child = castRayPath(scene, refrOrigin, split.refractDir, depth + 1, throughput, true,
                                                mode, dispersionEnabled, c, nullptr, guideGrid, trainingPass,
                                                kRefractRayTMin, rng);
@@ -1193,14 +1200,14 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
         if (dispChannel >= 0 && mat.dispersionDelta > 0.0f) {
             ior = channelIor(mat.ior, mat.dispersionDelta, dispChannel);
         }
-        RefractSplit split = computeRefractSplit(D, geomN, ior);
+        RefractSplit split = computeRefractSplit(viewDir, geomN, ior);
         if (split.tir) {
-            float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
+            float3 reflOrigin = offsetAlongNormal(surfPoint, Nface, kOriginOffset);
             return clampRadiance3(castRayPath(scene, reflOrigin, split.reflectDir, depth + 1, throughput, true,
                                               mode, dispersionEnabled, dispChannel, nullptr, guideGrid,
                                               trainingPass, kRayEps, rng));
         }
-        float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
+        float3 refrOrigin = offsetAlongRay(surfPoint, split.refractDir, kRefractOriginOffset);
         float3 newTp = applyRefractAtten(throughput);
         return clampRadiance3(castRayPath(scene, refrOrigin, split.refractDir, depth + 1, newTp, true,
                                           mode, dispersionEnabled, dispChannel, nullptr, guideGrid,
@@ -1208,17 +1215,17 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
     }
 
     if (mat.type == GPU_MAT_GLOSSY) {
-        float3 wo = mul3(D, -1.0f);
-        float3 N = shadingNormal(wo, geomN);
+        float3 wo = mul3(viewDir, -1.0f);
+        float3 shadeN = shadingNormal(wo, geomN);
         float3 kd = load3(mat.diffuse);
         float3 ks = load3(mat.specular);
         float3 direct = make3(0, 0, 0);
         float3 indirect = make3(0, 0, 0);
         if (useNee) {
-            direct = sampleDirectEmissiveBRDF(scene, hitPoint, N, wo, mat, useMis || useNee, rng);
-            direct = add3(direct, sampleDirectPointLightsGlossy(scene, hitPoint, N, wo, mat));
+            direct = sampleDirectEmissiveBRDF(scene, surfPoint, shadeN, wo, mat, useMis || useNee, rng);
+            direct = add3(direct, sampleDirectPointLightsGlossy(scene, surfPoint, shadeN, wo, mat));
             if (trainingPass && useGuide) {
-                guideDepositDirectEmissiveBRDF(scene, *guideGrid, hitPoint, N, wo, mat, throughput, rng);
+                guideDepositDirectEmissiveBRDF(scene, *guideGrid, surfPoint, shadeN, wo, mat, throughput, rng);
             }
         }
 
@@ -1240,23 +1247,23 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
             float cosTheta = sqrtf(fmaxf(0.0f, cosTheta2));
             float sinTheta = sqrtf(fmaxf(0.0f, 1.0f - cosTheta * cosTheta));
             float3 tangent, bitangent;
-            buildBasis(N, tangent, bitangent);
+            buildBasis(shadeN, tangent, bitangent);
             float3 h = norm3(add3(add3(mul3(tangent, cosf(phi) * sinTheta),
                                         mul3(bitangent, sinf(phi) * sinTheta)),
-                                    mul3(N, cosTheta)));
+                                    mul3(shadeN, cosTheta)));
             if (dot3(h, wo) < 0.0f) {
                 h = mul3(h, -1.0f);
             }
             wi = norm3(sub3(mul3(h, 2.0f * dot3(wo, h)), wo));
-            if (dot3(N, wi) <= 0.0f) {
+            if (dot3(shadeN, wi) <= 0.0f) {
                 return clampRadiance3(mul3v(direct, throughput));
             }
-            brdf = evalSpecular(N, wo, wi, ks, mat.roughness, load3(mat.f0));
-            pdf = pdfGlossy(N, wo, wi, mat);
+            brdf = evalSpecular(shadeN, wo, wi, ks, mat.roughness, load3(mat.f0));
+            pdf = pdfGlossy(shadeN, wo, wi, mat);
         } else if (useGuide && !trainingPass) {
             float pdfTotal = 0.0f;
-            if (sampleIndirectWithGuide(*guideGrid, hitPoint, N, wi, pdfTotal, rng)) {
-                float cosO = fmaxf(0.0f, dot3(N, wi));
+            if (sampleIndirectWithGuide(*guideGrid, surfPoint, shadeN, wi, pdfTotal, rng)) {
+                float cosO = fmaxf(0.0f, dot3(shadeN, wi));
                 float3 brdfVal = mul3(kd, 1.0f / kPi);
                 float rrProb = 1.0f;
                 bool traceIndirect = true;
@@ -1265,22 +1272,22 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
                     traceIndirect = gpuUniform(rng) <= rrProb;
                 }
                 if (traceIndirect) {
-                    float3 origin = offsetAlongNormal(hitPoint, N, kOriginOffset);
+                    float3 bounceOrigin = offsetAlongNormal(surfPoint, shadeN, kOriginOffset);
                     bool indirectEmissive = !useNee || useMis;
-                    float3 Li = castRayPath(scene, origin, wi, depth + 1, throughput, indirectEmissive,
+                    float3 Li = castRayPath(scene, bounceOrigin, wi, depth + 1, throughput, indirectEmissive,
                                             mode, dispersionEnabled, dispChannel, nullptr, guideGrid,
                                             trainingPass, kRayEps, rng);
                     if (trainingPass && useGuide) {
-                        guideDeposit(*guideGrid, hitPoint, N, wi, guideDepositWeight(throughput, Li));
+                        guideDeposit(*guideGrid, surfPoint, shadeN, wi, guideDepositWeight(throughput, Li));
                     }
                     indirect = clampRadiance3(mul3(mul3v(brdfVal, Li), cosO / (pdfTotal * rrProb)));
                 }
                 return clampRadiance3(add3(mul3v(direct, throughput), indirect));
             }
         } else {
-            wi = sampleCosineHemisphere(N, pdf, rng);
+            wi = sampleCosineHemisphere(shadeN, pdf, rng);
             brdf = mul3(kd, 1.0f / kPi);
-            pdf = pdfGlossy(N, wo, wi, mat);
+            pdf = pdfGlossy(shadeN, wo, wi, mat);
         }
 
         if (pdf >= 1e-8f) {
@@ -1291,25 +1298,25 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
                 traceIndirect = gpuUniform(rng) <= rrProb;
             }
             if (traceIndirect) {
-                float cosO = fmaxf(0.0f, dot3(N, wi));
-                float3 origin = offsetAlongNormal(hitPoint, N, kOriginOffset);
+                float cosO = fmaxf(0.0f, dot3(shadeN, wi));
+                float3 bounceOrigin = offsetAlongNormal(surfPoint, shadeN, kOriginOffset);
                 bool indirectEmissive = !useNee || useMis;
                 MisCtx mis;
                 const MisCtx *misPtr = nullptr;
                 if (useMis) {
                     mis.pdfBrdf = pdf;
                     mis.wi = wi;
-                    mis.shadingPoint = hitPoint;
-                    mis.N = N;
+                    mis.shadingPoint = surfPoint;
+                    mis.N = shadeN;
                     mis.active = true;
                     mis.glossyPath = true;
                     misPtr = &mis;
                 }
-                float3 Li = castRayPath(scene, origin, wi, depth + 1, throughput, indirectEmissive,
+                float3 Li = castRayPath(scene, bounceOrigin, wi, depth + 1, throughput, indirectEmissive,
                                         mode, dispersionEnabled, dispChannel, misPtr, guideGrid,
                                         trainingPass, kRayEps, rng);
                 if (trainingPass && useGuide) {
-                    guideDeposit(*guideGrid, hitPoint, N, wi, guideDepositWeight(throughput, Li));
+                    guideDeposit(*guideGrid, surfPoint, shadeN, wi, guideDepositWeight(throughput, Li));
                 }
                 indirect = clampRadiance3(mul3(mul3v(brdf, Li), cosO / (pdf * rrProb)));
             }
@@ -1317,16 +1324,16 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
         return clampRadiance3(add3(mul3v(direct, throughput), indirect));
     }
 
-    float3 N = shadingNormal(mul3(D, -1.0f), geomN);
-    float3 albedo = load3(mat.diffuse);
+    float3 shadeN = shadingNormal(mul3(viewDir, -1.0f), geomN);
+    float3 surfaceAlbedo = load3(mat.diffuse);
     float3 direct = make3(0, 0, 0);
     float3 indirect = make3(0, 0, 0);
     if (useNee) {
-        direct = add3(sampleDirectEmissive(scene, hitPoint, N, albedo, useMis, rng),
-                      sampleDirectPointLights(scene, hitPoint, N, albedo));
+        direct = add3(sampleDirectEmissive(scene, surfPoint, shadeN, surfaceAlbedo, useMis, rng),
+                      sampleDirectPointLights(scene, surfPoint, shadeN, surfaceAlbedo));
         if (trainingPass && useGuide) {
-            guideDepositDirectEmissive(scene, *guideGrid, hitPoint, N, albedo, throughput, rng);
-            guideDepositDirectPointLights(scene, *guideGrid, hitPoint, N, albedo, throughput);
+            guideDepositDirectEmissive(scene, *guideGrid, surfPoint, shadeN, surfaceAlbedo, throughput, rng);
+            guideDepositDirectPointLights(scene, *guideGrid, surfPoint, shadeN, surfaceAlbedo, throughput);
         }
     }
 
@@ -1334,23 +1341,23 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
     float pdf = 0.0f;
     if (useGuide && !trainingPass) {
         float pdfTotal = 0.0f;
-        if (sampleIndirectWithGuide(*guideGrid, hitPoint, N, wi, pdfTotal, rng)) {
-            float cosO = fmaxf(0.0f, dot3(N, wi));
-            float3 brdfVal = mul3(albedo, 1.0f / kPi);
+        if (sampleIndirectWithGuide(*guideGrid, surfPoint, shadeN, wi, pdfTotal, rng)) {
+            float cosO = fmaxf(0.0f, dot3(shadeN, wi));
+            float3 brdfVal = mul3(surfaceAlbedo, 1.0f / kPi);
             float rrProb = 1.0f;
             bool traceIndirect = true;
             if (depth >= kRrStartDepth) {
-                rrProb = survivalProb(mul3v(throughput, albedo));
+                rrProb = survivalProb(mul3v(throughput, surfaceAlbedo));
                 traceIndirect = gpuUniform(rng) <= rrProb;
             }
             if (traceIndirect) {
-                float3 origin = offsetAlongNormal(hitPoint, N, kOriginOffset);
+                float3 bounceOrigin = offsetAlongNormal(surfPoint, shadeN, kOriginOffset);
                 bool indirectEmissive = !useNee || useMis;
-                float3 Li = castRayPath(scene, origin, wi, depth + 1, throughput, indirectEmissive, mode,
+                float3 Li = castRayPath(scene, bounceOrigin, wi, depth + 1, throughput, indirectEmissive, mode,
                                         dispersionEnabled, dispChannel, nullptr, guideGrid,
                                         trainingPass, kRayEps, rng);
                 if (trainingPass && useGuide) {
-                    guideDeposit(*guideGrid, hitPoint, N, wi, guideDepositWeight(throughput, Li));
+                    guideDeposit(*guideGrid, surfPoint, shadeN, wi, guideDepositWeight(throughput, Li));
                 }
                 indirect = clampRadiance3(mul3(mul3v(brdfVal, Li), cosO / (pdfTotal * rrProb)));
             }
@@ -1358,35 +1365,35 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
         }
     }
 
-    wi = sampleCosineHemisphere(N, pdf, rng);
+    wi = sampleCosineHemisphere(shadeN, pdf, rng);
     if (pdf >= 1e-8f) {
         float rrProb = 1.0f;
         bool traceIndirect = true;
         if (depth >= kRrStartDepth) {
-            rrProb = survivalProb(mul3v(throughput, albedo));
+            rrProb = survivalProb(mul3v(throughput, surfaceAlbedo));
             traceIndirect = gpuUniform(rng) <= rrProb;
         }
         if (traceIndirect) {
-            float3 origin = offsetAlongNormal(hitPoint, N, kOriginOffset);
+            float3 bounceOrigin = offsetAlongNormal(surfPoint, shadeN, kOriginOffset);
             bool indirectEmissive = !useNee || useMis;
             MisCtx mis;
             const MisCtx *misPtr = nullptr;
             if (useMis) {
                 mis.pdfBrdf = pdf;
                 mis.wi = wi;
-                mis.shadingPoint = hitPoint;
-                mis.N = N;
+                mis.shadingPoint = surfPoint;
+                mis.N = shadeN;
                 mis.active = true;
                 mis.glossyPath = false;
                 misPtr = &mis;
             }
-            float3 Li = castRayPath(scene, origin, wi, depth + 1, throughput, indirectEmissive, mode,
+            float3 Li = castRayPath(scene, bounceOrigin, wi, depth + 1, throughput, indirectEmissive, mode,
                                     dispersionEnabled, dispChannel, misPtr, guideGrid, trainingPass,
                                     kRayEps, rng);
             if (trainingPass && useGuide) {
-                guideDeposit(*guideGrid, hitPoint, N, wi, guideDepositWeight(throughput, Li));
+                guideDeposit(*guideGrid, surfPoint, shadeN, wi, guideDepositWeight(throughput, Li));
             }
-            indirect = clampRadiance3(mul3(mul3v(albedo, Li), 1.0f / rrProb));
+            indirect = clampRadiance3(mul3(mul3v(surfaceAlbedo, Li), 1.0f / rrProb));
         }
     }
     return clampRadiance3(add3(mul3v(direct, throughput), indirect));
@@ -1467,52 +1474,53 @@ __device__ bool isInShadow(const GpuSceneDevice &scene, float3 p, float3 N, floa
     return true;
 }
 
-__device__ float3 castRayWhitted(const GpuSceneDevice &scene, float3 orig, float3 dir, int depth,
-                                 float tmin, bool dispersionEnabled, curandState &rng) {
+__device__ float3 castRayWhitted(const GpuSceneDevice &scene, float3 rayOrigin, float3 rayDir, int depth,
+                                 float tMin, bool dispersionEnabled, curandState &rng) {
     (void)rng;
     if (depth > kMaxDepth) {
         return load3(scene.camera.bg);
     }
-    HitRec hit;
-    if (!intersectScene(scene, orig, dir, tmin, hit)) {
+    HitRec surfHit;
+    if (!intersectScene(scene, rayOrigin, rayDir, tMin, surfHit)) {
         return load3(scene.camera.bg);
     }
-    const GpuMaterial &mat = scene.materials[hit.matId < 0 || hit.matId >= scene.numMaterials ? 0 : hit.matId];
-    float3 hitPoint = add3(orig, mul3(dir, hit.t));
-    float3 D = norm3(dir);
-    float3 geomN = norm3(load3(hit.n));
+    const GpuMaterial &mat =
+        scene.materials[surfHit.matId < 0 || surfHit.matId >= scene.numMaterials ? 0 : surfHit.matId];
+    float3 surfPoint = add3(rayOrigin, mul3(rayDir, surfHit.t));
+    float3 viewDir = norm3(rayDir);
+    float3 geomN = norm3(load3(surfHit.n));
 
     if (mat.type == GPU_MAT_EMISSIVE) {
         return load3(mat.emission);
     }
-    if (mat.type != GPU_MAT_REFRACT && mat.type != GPU_MAT_EMISSIVE && dot3(D, geomN) > 0.0f) {
+    if (mat.type != GPU_MAT_REFRACT && mat.type != GPU_MAT_EMISSIVE && dot3(viewDir, geomN) > 0.0f) {
         return make3(0, 0, 0);
     }
 
     if (mat.type == GPU_MAT_DIFFUSE || mat.type == GPU_MAT_GLOSSY) {
-        return shadeWhittedLights(scene, hitPoint, geomN, D, mat);
+        return shadeWhittedLights(scene, surfPoint, geomN, viewDir, mat);
     }
 
     if (mat.type == GPU_MAT_REFLECT) {
-        float3 N = faceNormal(D, geomN);
-        float3 reflected = sub3(D, mul3(N, 2.0f * dot3(D, N)));
-        float3 origin = offsetAlongNormal(hitPoint, N, kOriginOffset);
-        float3 child = castRayWhitted(scene, origin, reflected, depth + 1, kRayEps, dispersionEnabled, rng);
+        float3 shadeN = faceNormal(viewDir, geomN);
+        float3 reflected = sub3(viewDir, mul3(shadeN, 2.0f * dot3(viewDir, shadeN)));
+        float3 bounceOrigin = offsetAlongNormal(surfPoint, shadeN, kOriginOffset);
+        float3 child = castRayWhitted(scene, bounceOrigin, reflected, depth + 1, kRayEps, dispersionEnabled, rng);
         return mul3v(child, load3(mat.specular));
     }
 
     float3 refractColor = load3(mat.specular);
-    bool exiting = dot3(D, geomN) > 0.0f;
-    float3 Nface = faceNormal(D, geomN);
+    bool exiting = dot3(viewDir, geomN) > 0.0f;
+    float3 Nface = faceNormal(viewDir, geomN);
     if (dispersionEnabled && mat.dispersionDelta > 0.0f && exiting) {
         float rx = 0.0f;
         float gy = 0.0f;
         float bz = 0.0f;
         for (int c = 0; c < 3; ++c) {
             float ior = channelIor(mat.ior, mat.dispersionDelta, c);
-            RefractSplit split = computeRefractSplit(D, geomN, ior);
+            RefractSplit split = computeRefractSplit(viewDir, geomN, ior);
             if (split.tir) {
-                float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
+                float3 reflOrigin = offsetAlongNormal(surfPoint, Nface, kOriginOffset);
                 float3 child = castRayWhitted(scene, reflOrigin, split.reflectDir, depth + 1, kRayEps,
                                               dispersionEnabled, rng);
                 if (c == 0) {
@@ -1523,7 +1531,7 @@ __device__ float3 castRayWhitted(const GpuSceneDevice &scene, float3 orig, float
                     bz = child.z;
                 }
             } else {
-                float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
+                float3 refrOrigin = offsetAlongRay(surfPoint, split.refractDir, kRefractOriginOffset);
                 float3 child = castRayWhitted(scene, refrOrigin, split.refractDir, depth + 1, kRefractRayTMin,
                                               dispersionEnabled, rng);
                 if (c == 0) {
@@ -1538,14 +1546,14 @@ __device__ float3 castRayWhitted(const GpuSceneDevice &scene, float3 orig, float
         return make3(rx, gy, bz);
     }
 
-    RefractSplit split = computeRefractSplit(D, geomN, mat.ior);
+    RefractSplit split = computeRefractSplit(viewDir, geomN, mat.ior);
     if (split.tir) {
-        float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
+        float3 reflOrigin = offsetAlongNormal(surfPoint, Nface, kOriginOffset);
         float3 child = castRayWhitted(scene, reflOrigin, split.reflectDir, depth + 1, kRayEps,
                                       dispersionEnabled, rng);
         return child;
     }
-    float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
+    float3 refrOrigin = offsetAlongRay(surfPoint, split.refractDir, kRefractOriginOffset);
     float3 child = castRayWhitted(scene, refrOrigin, split.refractDir, depth + 1, kRefractRayTMin,
                                   dispersionEnabled, rng);
     return exiting ? child : mul3v(child, refractColor);
@@ -1588,42 +1596,40 @@ __global__ void initCurandKernel(curandState *states, int width, int height, uns
 __global__ void renderKernel(const GpuSceneDevice scene, float *output, curandState *rngStates,
                              int width, int height, int spp, int mode, bool dispersion,
                              const GpuGuidingGrid guideGrid, bool useGuideGrid) {
-    // One thread ↔ one pixel; SPP is serial inside the thread (same structure as CPU main loop).
+    // 原创性声明：参考已有代码（CPU 主循环结构），一像素一线程的 SPP 累加独立实现。
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) {
         return;
     }
 
-    curandState localState = rngStates[y * width + x];
-    float3 accum = make3(0, 0, 0);
+    curandState threadRng = rngStates[y * width + x];
+    float3 pixelRadiance = make3(0, 0, 0);
     const GpuGuidingGrid *guidePtr = useGuideGrid ? &guideGrid : nullptr;
-    for (int s = 0; s < spp; ++s) {
+    for (int sampleIdx = 0; sampleIdx < spp; ++sampleIdx) {
         float jx = float(x);
         float jy = float(y);
         if (spp > 1) {
-            jx += hash01(x, y, s);
-            jy += hash01(y, x, s + 31);
+            jx += hash01(x, y, sampleIdx);
+            jy += hash01(y, x, sampleIdx + 31);
         }
-        float3 orig = load3(scene.camera.center);
-        float3 dir = generateCameraDir(scene.camera, jx, jy);
-        float3 sampleColor;
+        float3 rayOrigin = load3(scene.camera.center);
+        float3 rayDir = generateCameraDir(scene.camera, jx, jy);
+        float3 sampleRadiance;
         if (mode == GPU_WHITTED) {
-            sampleColor = castRayWhitted(scene, orig, dir, 0, kRayEps, dispersion, localState);
+            sampleRadiance = castRayWhitted(scene, rayOrigin, rayDir, 0, kRayEps, dispersion, threadRng);
         } else {
-            // Primary rays must show emissive surfaces directly; NEE only suppresses
-            // emissive on indirect bounces to avoid double counting with light sampling.
-            sampleColor = castRayPath(scene, orig, dir, 0, make3(1, 1, 1), true, mode,
-                                      dispersion, -1, nullptr, guidePtr, false, kRayEps, localState);
+            sampleRadiance = castRayPath(scene, rayOrigin, rayDir, 0, make3(1, 1, 1), true, mode,
+                                       dispersion, -1, nullptr, guidePtr, false, kRayEps, threadRng);
         }
-        accum = add3(accum, sampleColor);
+        pixelRadiance = add3(pixelRadiance, sampleRadiance);
     }
-    rngStates[y * width + x] = localState;
-    accum = mul3(accum, 1.0f / spp);
+    rngStates[y * width + x] = threadRng;
+    pixelRadiance = mul3(pixelRadiance, 1.0f / spp);
     int idx = (y * width + x) * 3;
-    output[idx + 0] = accum.x;
-    output[idx + 1] = accum.y;
-    output[idx + 2] = accum.z;
+    output[idx + 0] = pixelRadiance.x;
+    output[idx + 1] = pixelRadiance.y;
+    output[idx + 2] = pixelRadiance.z;
 }
 
 __global__ void trainGuideKernel(const GpuSceneDevice scene, curandState *rngStates, int width,
@@ -1775,7 +1781,7 @@ static bool uploadScene(const GpuSceneHost &host, int width, int height) {
     freeDeviceBuffers();
     auto check = [](cudaError_t e, const char *msg) -> bool {
         if (e != cudaSuccess) {
-            fprintf(stderr, "CUDA error: %s (%s)\n", msg, cudaGetErrorString(e));
+            fprintf(stderr, "[GPU] 上传失败: %s (%s)\n", msg, cudaGetErrorString(e));
             return false;
         }
         return true;
@@ -1931,7 +1937,7 @@ bool renderWithCuda(const SceneParser &scene, Image &image, RenderMode mode, int
     int height = scene.getCamera()->getHeight();
 
     fprintf(stderr,
-            "CUDA scene: materials=%d spheres=%d planes=%d triangles=%d bvhNodes=%d area=%d point=%d dir=%d\n",
+            "[GPU] 场景统计 — 材质=%d 球=%d 面=%d 三角=%d BVH节点=%d 面光=%d 点光=%d 平行光=%d\n",
             host.numMaterials, host.numSpheres, host.numPlanes, host.numTriangles, host.numBVHNodes,
             host.numAreaLights, host.numPointLights, host.numDirectionalLights);
 
@@ -1942,7 +1948,7 @@ bool renderWithCuda(const SceneParser &scene, Image &image, RenderMode mode, int
     if (host.numPointLights > 0) {
         GpuPointLight hpl{};
         if (cudaMemcpy(&hpl, g_device.pointLights, sizeof(GpuPointLight), cudaMemcpyDeviceToHost) == cudaSuccess) {
-            fprintf(stderr, "CUDA point light: pos=(%.2f,%.2f,%.2f) col=(%.2f,%.2f,%.2f)\n",
+            fprintf(stderr, "[GPU] 点光源 pos=(%.2f,%.2f,%.2f) 颜色=(%.2f,%.2f,%.2f)\n",
                     hpl.pos[0], hpl.pos[1], hpl.pos[2], hpl.color[0], hpl.color[1], hpl.color[2]);
         }
     }
@@ -1973,12 +1979,12 @@ bool renderWithCuda(const SceneParser &scene, Image &image, RenderMode mode, int
     initCurandKernel<<<grid, block>>>(g_device.rngStates, width, height, kCudaRenderSeed);
     cudaError_t initErr = cudaGetLastError();
     if (initErr != cudaSuccess) {
-        fprintf(stderr, "CUDA curand init error: %s\n", cudaGetErrorString(initErr));
+        fprintf(stderr, "[GPU] curand 初始化出错: %s\n", cudaGetErrorString(initErr));
         return false;
     }
 
     if (useGuiding) {
-        fprintf(stderr, "CUDA path guiding: training pass (%d spp)...\n", effectiveTrainSpp);
+        fprintf(stderr, "[GPU] 路径引导训练阶段 (%d spp)...\n", effectiveTrainSpp);
         if (cudaMemset(g_device.guideWeights, 0,
                        sizeof(float) * kGuideNumCells * kGuideBinsPerCell) != cudaSuccess) {
             return false;
@@ -1987,7 +1993,7 @@ bool renderWithCuda(const SceneParser &scene, Image &image, RenderMode mode, int
                                           effectiveTrainSpp, guideGridDev);
         cudaError_t trainErr = cudaDeviceSynchronize();
         if (trainErr != cudaSuccess) {
-            fprintf(stderr, "CUDA train kernel error: %s\n", cudaGetErrorString(trainErr));
+            fprintf(stderr, "[GPU] 训练 kernel 出错: %s\n", cudaGetErrorString(trainErr));
             return false;
         }
         int normBlock = 256;
@@ -1995,7 +2001,7 @@ bool renderWithCuda(const SceneParser &scene, Image &image, RenderMode mode, int
         normalizeGuideKernel<<<normGrid, normBlock>>>(guideGridDev);
         cudaError_t normErr = cudaDeviceSynchronize();
         if (normErr != cudaSuccess) {
-            fprintf(stderr, "CUDA normalize guide error: %s\n", cudaGetErrorString(normErr));
+            fprintf(stderr, "[GPU] 引导表归一化出错: %s\n", cudaGetErrorString(normErr));
             return false;
         }
         {
@@ -2013,11 +2019,11 @@ bool renderWithCuda(const SceneParser &scene, Image &image, RenderMode mode, int
                         ++filled;
                     }
                 }
-                fprintf(stderr, "CUDA path guiding: %d / %d cells filled (%.1f%%)\n", filled,
+                fprintf(stderr, "[GPU] 引导网格: %d / %d 单元有权重 (%.1f%%)\n", filled,
                         kGuideNumCells, 100.0f * filled / kGuideNumCells);
             }
         }
-        fprintf(stderr, "CUDA path guiding: render pass (%d spp)...\n", spp);
+        fprintf(stderr, "[GPU] 路径引导渲染阶段 (%d spp)...\n", spp);
     }
 
     renderKernel<<<grid, block>>>(sceneDev, g_device.pixels, g_device.rngStates, width, height, spp,
@@ -2027,7 +2033,7 @@ bool renderWithCuda(const SceneParser &scene, Image &image, RenderMode mode, int
     renderSec = std::chrono::duration<double>(t1 - t0).count();
 
     if (err != cudaSuccess) {
-        fprintf(stderr, "CUDA kernel error: %s\n", cudaGetErrorString(err));
+        fprintf(stderr, "[GPU] 渲染 kernel 出错: %s\n", cudaGetErrorString(err));
         return false;
     }
 

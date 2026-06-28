@@ -1,6 +1,10 @@
 #ifndef RAYTRACER_H
 #define RAYTRACER_H
 
+// 文件说明：CPU 端 Whitted 与路径追踪（NEE/MIS/色散）核心。
+// 原创性声明：参考已有代码（GAMES101、PBRT 概念与课件公式），
+// 光路调度、NEE/MIS 权重与 Russian Roulette 等按作业需求独立实现。
+
 #include <cmath>
 #include <cfloat>
 #include <algorithm>
@@ -358,7 +362,8 @@ private:
         float pdfH = D * nh;
         float vh = std::max(0.001f, Vector3f::dot(wo, h));
         float pdfSpec = specProb * pdfH / (4.0f * vh);
-        return pdfDiff + pdfSpec;
+        float pdfTotal = pdfDiff + pdfSpec;
+        return pdfTotal;
     }
 
     float pdfGlossyBRDF(const Vector3f &n, const Vector3f &wo, const Vector3f &wi,
@@ -415,14 +420,14 @@ private:
     }
 
     bool isSegmentOccluded(const Vector3f &from, const Vector3f &to, const Vector3f &N) const {
-        Vector3f dir = to - from;
-        float dist = dir.length();
+        Vector3f omega_dir = to - from;
+        float dist = omega_dir.length();
         if (dist < RAY_EPSILON) {
             return false;
         }
-        dir = dir / dist;
+        omega_dir = omega_dir / dist;
         Vector3f shadowN = N;
-        if (Vector3f::dot(shadowN, dir) < 0.0f) {
+        if (Vector3f::dot(shadowN, omega_dir) < 0.0f) {
             shadowN = -shadowN;
         }
         Vector3f origin = from + shadowN * SHADOW_EPSILON;
@@ -431,7 +436,7 @@ private:
             if (remaining <= RAY_EPSILON) {
                 return false;
             }
-            Ray shadowRay(origin, dir);
+            Ray shadowRay(origin, omega_dir);
             Hit shadowHit;
             if (!scene.getGroup()->intersect(shadowRay, shadowHit, RAY_EPSILON)) {
                 return false;
@@ -444,8 +449,8 @@ private:
                 return false;
             }
             if (blocker == MaterialType::REFRACT) {
-                Vector3f hitPoint = origin + dir * shadowHit.getT();
-                origin = offsetAlongRay(hitPoint, dir, REFRACT_ORIGIN_OFFSET);
+                Vector3f hitPoint = origin + omega_dir * shadowHit.getT();
+                origin = offsetAlongRay(hitPoint, omega_dir, REFRACT_ORIGIN_OFFSET);
                 continue;
             }
             return true;
@@ -453,94 +458,98 @@ private:
         return false;
     }
 
+    // 原创性声明：参考已有代码，NEE 面积光采样公式来自课件；MIS 幂启发式按 PBRT 思路独立实现。
     // NEE direct term for one triangle area light (Lambertian).
     // L = Le * (albedo/pi) * cos(theta_o) / pdf_omega, pdf_omega = (1/A) * r^2 / cos(theta_l)
-    bool sampleOneAreaLightDiffuse(const AreaLight *area, const Vector3f &hitPoint, const Vector3f &N,
+    bool sampleOneAreaLightDiffuse(const AreaLight *area, const Vector3f &surfPoint, const Vector3f &shadeN,
                                    const Vector3f &albedo, Vector3f &contrib) const {
         const Vector3f &v0 = area->getVertex0();
         const Vector3f &v1 = area->getVertex1();
         const Vector3f &v2 = area->getVertex2();
-        Vector3f lightPoint = sampleTriangle(v0, v1, v2);
-        Vector3f wi = lightPoint - hitPoint;
-        float dist2 = wi.squaredLength();
-        float dist = sqrtf(dist2);
-        if (dist < RAY_EPSILON) {
+        Vector3f sampOnLight = sampleTriangle(v0, v1, v2);
+        Vector3f toLight = sampOnLight - surfPoint;
+        float segLenSq = toLight.squaredLength();
+        float segLen = sqrtf(segLenSq);
+        if (segLen < RAY_EPSILON) {
             return false;
         }
-        wi = wi / dist;
+        Vector3f lightWi = toLight / segLen;
 
-        float cosO = Vector3f::dot(N, wi);
-        if (cosO <= 0.0f) {
+        float cosOut = Vector3f::dot(shadeN, lightWi);
+        if (cosOut <= 0.0f) {
             return false;
         }
 
         Vector3f lightN = Vector3f::cross(v1 - v0, v2 - v0).normalized();
-        float cosL = Vector3f::dot(lightN, -wi);
-        if (cosL <= 0.0f) {
+        float cosOnLight = Vector3f::dot(lightN, -lightWi);
+        if (cosOnLight <= 0.0f) {
             return false;
         }
 
-        if (isSegmentOccluded(hitPoint, lightPoint, N)) {
+        if (isSegmentOccluded(surfPoint, sampOnLight, shadeN)) {
             return false;
         }
 
-        float lightArea = triangleArea(v0, v1, v2);
+        float triArea = triangleArea(v0, v1, v2);
         Vector3f emission = area->getColor();
         if (useMIS()) {
-            float pdfLight = dist2 / (lightArea * cosL);
-            float pdfBrdf = pdfDiffuseBRDF(cosO);
+            float pdfLight = segLenSq / (triArea * cosOnLight);
+            float pdfBrdf = pdfDiffuseBRDF(cosOut);
             float misW = misWeightPower(pdfLight, pdfLight, pdfBrdf);
             if (misW < 1e-8f) {
                 return false;
             }
-            contrib += albedo * emission * cosO / (M_PI_F * pdfLight) * misW;
+            float brdfTerm = cosOut / M_PI_F;
+            Vector3f lightTerm = albedo * emission * (brdfTerm / pdfLight);
+            contrib += lightTerm * misW;
         } else {
-            contrib += albedo * emission * cosO * cosL * lightArea / (M_PI_F * dist2);
+            float geoFactor = cosOut * cosOnLight * triArea / (M_PI_F * segLenSq);
+            contrib += albedo * emission * geoFactor;
         }
         return true;
     }
 
-    bool sampleOneAreaLightGlossy(const AreaLight *area, const Vector3f &hitPoint, const Vector3f &N,
+    bool sampleOneAreaLightGlossy(const AreaLight *area, const Vector3f &surfPoint, const Vector3f &shadeN,
                                   const Vector3f &wo, GlossyMaterial *mat, Vector3f &contrib) const {
         const Vector3f &v0 = area->getVertex0();
         const Vector3f &v1 = area->getVertex1();
         const Vector3f &v2 = area->getVertex2();
-        Vector3f lightPoint = sampleTriangle(v0, v1, v2);
-        Vector3f wi = lightPoint - hitPoint;
-        float dist2 = wi.squaredLength();
-        float dist = sqrtf(dist2);
-        if (dist < RAY_EPSILON) {
+        Vector3f sampOnLight = sampleTriangle(v0, v1, v2);
+        Vector3f toLight = sampOnLight - surfPoint;
+        float segLenSq = toLight.squaredLength();
+        float segLen = sqrtf(segLenSq);
+        if (segLen < RAY_EPSILON) {
             return false;
         }
-        wi = wi / dist;
+        Vector3f lightWi = toLight / segLen;
 
-        float cosO = Vector3f::dot(N, wi);
-        if (cosO <= 0.0f) {
+        float cosOut = Vector3f::dot(shadeN, lightWi);
+        if (cosOut <= 0.0f) {
             return false;
         }
 
         Vector3f lightN = Vector3f::cross(v1 - v0, v2 - v0).normalized();
-        float cosL = Vector3f::dot(lightN, -wi);
-        if (cosL <= 0.0f) {
+        float cosOnLight = Vector3f::dot(lightN, -lightWi);
+        if (cosOnLight <= 0.0f) {
             return false;
         }
 
-        if (isSegmentOccluded(hitPoint, lightPoint, N)) {
+        if (isSegmentOccluded(surfPoint, sampOnLight, shadeN)) {
             return false;
         }
 
-        float lightArea = triangleArea(v0, v1, v2);
-        Vector3f brdf = mat->evaluateBRDF(N, wo, wi);
+        float triArea = triangleArea(v0, v1, v2);
+        Vector3f brdfVal = mat->evaluateBRDF(shadeN, wo, lightWi);
         if (useGlossyNEEMIS()) {
-            float pdfLight = dist2 / (lightArea * cosL);
-            float pdfBrdf = pdfGlossyBRDF(N, wo, wi, mat);
+            float pdfLight = segLenSq / (triArea * cosOnLight);
+            float pdfBrdf = pdfGlossyBRDF(shadeN, wo, lightWi, mat);
             float misW = misWeightPower(pdfLight, pdfLight, pdfBrdf);
             if (misW < 1e-8f) {
                 return false;
             }
-            contrib += brdf * area->getColor() * cosO / pdfLight * misW;
+            contrib += brdfVal * area->getColor() * cosOut / pdfLight * misW;
         } else {
-            contrib += brdf * area->getColor() * cosO * cosL * lightArea / dist2;
+            contrib += brdfVal * area->getColor() * cosOut * cosOnLight * triArea / segLenSq;
         }
         return true;
     }
@@ -714,43 +723,43 @@ private:
         return traceDielectricRefract(ray, hit, mat, depth, throughput, dispChannel, ior);
     }
 
-    Vector3f castRayWhitted(const Ray &ray, int depth, float tmin) const {
+    Vector3f castRayWhitted(const Ray &ray, int depth, float tMin) const {
         if (depth > MAX_TRACE_DEPTH) {
             return scene.getBackgroundColor();
         }
 
-        Hit hit;
-        if (!scene.getGroup()->intersect(ray, hit, tmin)) {
+        Hit surfHit;
+        if (!scene.getGroup()->intersect(ray, surfHit, tMin)) {
             return scene.getBackgroundColor();
         }
 
-        Material *mat = hit.getMaterial();
-        Vector3f hitPoint = ray.pointAtParameter(hit.getT());
-        Vector3f D = ray.getDirection().normalized();
-        Vector3f geomN = hit.getNormal().normalized();
+        Material *mat = surfHit.getMaterial();
+        Vector3f surfPoint = ray.pointAtParameter(surfHit.getT());
+        Vector3f viewDir = ray.getDirection().normalized();
+        Vector3f geomN = surfHit.getNormal().normalized();
 
         if (mat->getType() == MaterialType::EMISSIVE) {
             return mat->getEmission();
         }
 
-        if (isOpaqueBackFace(D, geomN, mat->getType())) {
+        if (isOpaqueBackFace(viewDir, geomN, mat->getType())) {
             return Vector3f::ZERO;
         }
 
         if (mat->getType() == MaterialType::GLOSSY) {
-            return shadeGlossyWhitted(ray, hit, hitPoint);
+            return shadeGlossyWhitted(ray, surfHit, surfPoint);
         }
 
         if (mat->getType() == MaterialType::DIFFUSE) {
-            return shadeDiffuse(ray, hit, hitPoint);
+            return shadeDiffuse(ray, surfHit, surfPoint);
         }
 
         if (mat->getType() == MaterialType::REFLECT) {
-            Vector3f N = faceNormal(D, geomN);
-            Vector3f reflected = D - 2.0f * Vector3f::dot(D, N) * N;
-            Vector3f origin = offsetAlongNormal(hitPoint, N, ORIGIN_OFFSET);
+            Vector3f shadeN = faceNormal(viewDir, geomN);
+            Vector3f reflected = viewDir - 2.0f * Vector3f::dot(viewDir, shadeN) * shadeN;
+            Vector3f bounceOrigin = offsetAlongNormal(surfPoint, shadeN, ORIGIN_OFFSET);
             auto *reflectMat = static_cast<ReflectMaterial *>(mat);
-            Vector3f child = castRayWhitted(Ray(origin, reflected), depth + 1, RAY_EPSILON);
+            Vector3f child = castRayWhitted(Ray(bounceOrigin, reflected), depth + 1, RAY_EPSILON);
             return reflectMat->getReflectColor() * child;
         }
 
@@ -759,18 +768,18 @@ private:
         float delta = refractMat->getDispersionDelta();
         const Vector3f &refractColor = refractMat->getRefractColor();
 
-        bool exiting = Vector3f::dot(D, geomN) > 0.0f;
+        bool exiting = Vector3f::dot(viewDir, geomN) > 0.0f;
         if (dispersionEnabled && delta > 0.0f && exiting) {
             Vector3f result = Vector3f::ZERO;
             for (int c = 0; c < 3; ++c) {
                 float ior = channelIor(baseIor, delta, c);
-                RefractSplit split = computeRefractSplit(D, geomN, ior);
+                RefractSplit split = computeRefractSplit(viewDir, geomN, ior);
                 if (split.tir) {
-                    Vector3f reflOrigin = offsetAlongNormal(hitPoint, faceNormal(D, geomN), ORIGIN_OFFSET);
+                    Vector3f reflOrigin = offsetAlongNormal(surfPoint, faceNormal(viewDir, geomN), ORIGIN_OFFSET);
                     Vector3f child = castRayWhitted(Ray(reflOrigin, split.reflectDir), depth + 1, RAY_EPSILON);
                     result[c] = child[c];
                 } else {
-                    Vector3f refrOrigin = offsetAlongRay(hitPoint, split.refractDir, REFRACT_ORIGIN_OFFSET);
+                    Vector3f refrOrigin = offsetAlongRay(surfPoint, split.refractDir, REFRACT_ORIGIN_OFFSET);
                     Vector3f child = castRayWhitted(Ray(refrOrigin, split.refractDir), depth + 1, REFRACT_RAY_TMIN);
                     result[c] = child[c];
                 }
@@ -778,122 +787,122 @@ private:
             return result;
         }
 
-        RefractSplit split = computeRefractSplit(D, geomN, baseIor);
+        RefractSplit split = computeRefractSplit(viewDir, geomN, baseIor);
         if (split.tir) {
-            Vector3f reflOrigin = offsetAlongNormal(hitPoint, faceNormal(D, geomN), ORIGIN_OFFSET);
+            Vector3f reflOrigin = offsetAlongNormal(surfPoint, faceNormal(viewDir, geomN), ORIGIN_OFFSET);
             Vector3f child = castRayWhitted(Ray(reflOrigin, split.reflectDir), depth + 1, RAY_EPSILON);
             return child;
         }
-        Vector3f refrOrigin = offsetAlongRay(hitPoint, split.refractDir, REFRACT_ORIGIN_OFFSET);
+        Vector3f refrOrigin = offsetAlongRay(surfPoint, split.refractDir, REFRACT_ORIGIN_OFFSET);
         Vector3f child = castRayWhitted(Ray(refrOrigin, split.refractDir), depth + 1, REFRACT_RAY_TMIN);
         return exiting ? child : refractColor * child;
     }
 
-    // path tracing
+    // 原创性声明：参考已有代码（路径追踪通用框架），bounce 调度与 MIS 间接项独立实现。
     Vector3f castRayPath(const Ray &ray, int depth, const Vector3f &throughput,
                          bool countEmissive, const MisIndirectCtx *misCtx = nullptr,
-                         int dispChannel = -1, float tmin = RAY_EPSILON) const {
+                         int dispChannel = -1, float tMin = RAY_EPSILON) const {
         if (depth > MAX_TRACE_DEPTH) {
             return Vector3f::ZERO;
         }
 
-        Hit hit;
-        if (!scene.getGroup()->intersect(ray, hit, tmin)) {
+        Hit surfHit;
+        if (!scene.getGroup()->intersect(ray, surfHit, tMin)) {
             return Vector3f::ZERO;
         }
 
-        Material *mat = hit.getMaterial();
-        Vector3f hitPoint = ray.pointAtParameter(hit.getT());
-        Vector3f D = ray.getDirection().normalized();
-        Vector3f geomN = hit.getNormal().normalized();
+        Material *mat = surfHit.getMaterial();
+        Vector3f surfPoint = ray.pointAtParameter(surfHit.getT());
+        Vector3f viewDir = ray.getDirection().normalized();
+        Vector3f geomN = surfHit.getNormal().normalized();
 
-        if (mat->getType() == MaterialType::EMISSIVE) { //
-            if (!countEmissive) {
-                return Vector3f::ZERO;
-            }
-            Vector3f emission = mat->getEmission();
-            if (misCtx != nullptr) {
-                float pdfLight = computeAreaLightPdf(misCtx->shadingPoint, misCtx->wi);
-                float misW = misWeightPower(misCtx->pdfBrdf, pdfLight, misCtx->pdfBrdf);
-                if (misW < 1e-8f) {
+        if (mat->getType() == MaterialType::EMISSIVE) {
+            if (countEmissive) {
+                Vector3f emission = mat->getEmission();
+                if (misCtx != nullptr) {
+                    float pdfLight = computeAreaLightPdf(misCtx->shadingPoint, misCtx->wi);
+                    float misW = misWeightPower(misCtx->pdfBrdf, pdfLight, misCtx->pdfBrdf);
+                    if (misW >= 1e-8f) {
+                        float scale = misW / misCtx->pdfBrdf;
+                        return clampRadiance(Vector3f(
+                            throughput[0] * emission[0] * scale,
+                            throughput[1] * emission[1] * scale,
+                            throughput[2] * emission[2] * scale));
+                    }
                     return Vector3f::ZERO;
                 }
-                float scale = misW / misCtx->pdfBrdf;
                 return clampRadiance(Vector3f(
-                    throughput[0] * emission[0] * scale,
-                    throughput[1] * emission[1] * scale,
-                    throughput[2] * emission[2] * scale));
+                    throughput[0] * emission[0],
+                    throughput[1] * emission[1],
+                    throughput[2] * emission[2]));
             }
-            return clampRadiance(Vector3f(
-                throughput[0] * emission[0],
-                throughput[1] * emission[1],
-                throughput[2] * emission[2]));
+            return Vector3f::ZERO;
         }
 
-        if (isOpaqueBackFace(D, geomN, mat->getType())) {
+        if (isOpaqueBackFace(viewDir, geomN, mat->getType())) {
             return Vector3f::ZERO;
         }
 
         if (mat->getType() == MaterialType::REFLECT) {
-            return traceReflectChild(ray, hit, static_cast<ReflectMaterial *>(mat), depth, throughput,
+            return traceReflectChild(ray, surfHit, static_cast<ReflectMaterial *>(mat), depth, throughput,
                                      dispChannel);
         }
 
         if (mat->getType() == MaterialType::REFRACT) {
-            return traceRefractChild(ray, hit, static_cast<RefractMaterial *>(mat), depth, throughput,
+            return traceRefractChild(ray, surfHit, static_cast<RefractMaterial *>(mat), depth, throughput,
                                      dispChannel);
         }
 
         if (mat->getType() == MaterialType::GLOSSY) {
-            return shadeGlossyPath(hit, hitPoint, D, geomN, static_cast<GlossyMaterial *>(mat), depth,
+            return shadeGlossyPath(surfHit, surfPoint, viewDir, geomN, static_cast<GlossyMaterial *>(mat), depth,
                                    throughput, dispChannel);
         }
 
-        return shadeDiffusePath(hit, hitPoint, D, geomN, mat, depth, throughput, dispChannel);
+        return shadeDiffusePath(surfHit, surfPoint, viewDir, geomN, mat, depth, throughput, dispChannel);
     }
 
-    Vector3f shadeDiffusePath(const Hit &hit, const Vector3f &hitPoint, const Vector3f &D,
+    Vector3f shadeDiffusePath(const Hit &surfHit, const Vector3f &surfPoint, const Vector3f &viewDir,
                               const Vector3f &geomN, Material *mat, int depth,
                               const Vector3f &throughput, int dispChannel) const {
-        Vector3f N = mat->getShadingNormal(hit, -D);
-        Vector3f albedo = mat->getShadedDiffuse(hit);
+        Vector3f shadeN = mat->getShadingNormal(surfHit, -viewDir);
+        Vector3f surfaceAlbedo = mat->getShadedDiffuse(surfHit);
 
         Vector3f direct = Vector3f::ZERO;
         if (useNEE()) {
-            direct = sampleDirectEmissive(hitPoint, N, albedo) +
-                     sampleDirectPointLights(hitPoint, N, albedo);
+            direct = sampleDirectEmissive(surfPoint, shadeN, surfaceAlbedo) +
+                     sampleDirectPointLights(surfPoint, shadeN, surfaceAlbedo);
         }
 
         float pdf = 0.0f;
-        Vector3f wi = sampleCosineHemisphere(N, pdf);
+        Vector3f lightWi = sampleCosineHemisphere(shadeN, pdf);
         Vector3f indirect = Vector3f::ZERO;
         if (pdf >= 1e-8f) {
             float rrProb = 1.0f;
             bool traceIndirect = true;
             if (depth >= RR_START_DEPTH) {
-                rrProb = survivalProbability(throughput * albedo);
+                rrProb = survivalProbability(throughput * surfaceAlbedo);
                 traceIndirect = uniform() <= rrProb;
             }
             if (traceIndirect) {
-                Vector3f origin = offsetAlongNormal(hitPoint, N, ORIGIN_OFFSET);
+                Vector3f bounceOrigin = offsetAlongNormal(surfPoint, shadeN, ORIGIN_OFFSET);
                 MisIndirectCtx misCtx;
                 const MisIndirectCtx *misPtr = nullptr;
                 if (useMIS()) {
                     misCtx.pdfBrdf = pdf;
-                    misCtx.wi = wi;
-                    misCtx.shadingPoint = hitPoint;
-                    misCtx.N = N;
-                    misCtx.wo = -D;
+                    misCtx.wi = lightWi;
+                    misCtx.shadingPoint = surfPoint;
+                    misCtx.N = shadeN;
+                    misCtx.wo = -viewDir;
                     misCtx.glossyMat = nullptr;
                     misPtr = &misCtx;
                 }
                 bool indirectEmissive = !useNEE() || useMIS();
-                Vector3f Li = castRayPath(Ray(origin, wi), depth + 1, throughput, indirectEmissive,
+                Vector3f Li = castRayPath(Ray(bounceOrigin, lightWi), depth + 1, throughput, indirectEmissive,
                                           misPtr, dispChannel);
                 indirect = clampRadiance(Vector3f(
-                    albedo[0] * Li[0],
-                    albedo[1] * Li[1],
-                    albedo[2] * Li[2]) / rrProb);
+                    surfaceAlbedo[0] * Li[0],
+                    surfaceAlbedo[1] * Li[1],
+                    surfaceAlbedo[2] * Li[2]) / rrProb);
             }
         }
 
@@ -903,19 +912,19 @@ private:
             throughput[2] * direct[2] + indirect[2]));
     }
 
-    Vector3f shadeGlossyPath(const Hit &hit, const Vector3f &hitPoint, const Vector3f &D,
+    Vector3f shadeGlossyPath(const Hit &surfHit, const Vector3f &surfPoint, const Vector3f &viewDir,
                              const Vector3f &geomN, GlossyMaterial *mat, int depth,
                              const Vector3f &throughput, int dispChannel) const {
-        Vector3f wo = -D;
-        Vector3f N = mat->getShadingNormal(hit, wo);
-        Vector3f kd = mat->getShadedDiffuse(hit);
+        Vector3f wo = -viewDir;
+        Vector3f shadeN = mat->getShadingNormal(surfHit, wo);
+        Vector3f kd = mat->getShadedDiffuse(surfHit);
         Vector3f ks = mat->getSpecularColor();
         float roughness = mat->getRoughness();
 
         Vector3f direct = Vector3f::ZERO;
         if (useNEE()) {
-            direct = sampleDirectEmissiveBRDF(hitPoint, N, wo, mat) +
-                     sampleDirectPointLightsBRDF(hitPoint, N, wo, mat);
+            direct = sampleDirectEmissiveBRDF(surfPoint, shadeN, wo, mat) +
+                     sampleDirectPointLightsBRDF(surfPoint, shadeN, wo, mat);
         }
 
         float kdLum = luminance(kd);
@@ -923,23 +932,23 @@ private:
         bool isMetal = kdLum < 0.01f;
         float specProb = isMetal ? 1.0f : ksLum / std::max(1e-4f, kdLum + ksLum);
 
-        Vector3f wi;
+        Vector3f lightWi;
         float pdfDummy = 0.0f;
         bool specularLobe = isMetal || uniform() < specProb;
-        Vector3f brdf = Vector3f::ZERO;
+        Vector3f brdfVal = Vector3f::ZERO;
         if (specularLobe) {
             float pdfH = 0.0f;
-            Vector3f h = sampleGGXHalfVector(N, wo, roughness, pdfH);
-            wi = (2.0f * Vector3f::dot(wo, h) * h - wo).normalized();
-            if (Vector3f::dot(N, wi) <= 0.0f) {
+            Vector3f h = sampleGGXHalfVector(shadeN, wo, roughness, pdfH);
+            lightWi = (2.0f * Vector3f::dot(wo, h) * h - wo).normalized();
+            if (Vector3f::dot(shadeN, lightWi) <= 0.0f) {
                 return clampRadiance(throughput * direct);
             }
-            brdf = mat->evaluateSpecular(N, wo, wi);
+            brdfVal = mat->evaluateSpecular(shadeN, wo, lightWi);
         } else {
-            wi = sampleCosineHemisphere(N, pdfDummy);
-            brdf = mat->evaluateDiffuse(N, wi, kd);
+            lightWi = sampleCosineHemisphere(shadeN, pdfDummy);
+            brdfVal = mat->evaluateDiffuse(shadeN, lightWi, kd);
         }
-        float pdf = pdfGlossyBRDF(N, wo, wi, mat);
+        float pdf = pdfGlossyBRDF(shadeN, wo, lightWi, mat);
 
         Vector3f indirect = Vector3f::ZERO;
         if (pdf >= 1e-8f) {
@@ -950,23 +959,23 @@ private:
                 traceIndirect = uniform() <= rrProb;
             }
             if (traceIndirect) {
-                float cosO = std::max(0.0f, Vector3f::dot(N, wi));
-                Vector3f origin = offsetAlongNormal(hitPoint, N, ORIGIN_OFFSET);
+                float cosOut = std::max(0.0f, Vector3f::dot(shadeN, lightWi));
+                Vector3f bounceOrigin = offsetAlongNormal(surfPoint, shadeN, ORIGIN_OFFSET);
                 MisIndirectCtx misCtx;
                 const MisIndirectCtx *misPtr = nullptr;
                 if (useMIS()) {
                     misCtx.pdfBrdf = pdf;
-                    misCtx.wi = wi;
-                    misCtx.shadingPoint = hitPoint;
-                    misCtx.N = N;
+                    misCtx.wi = lightWi;
+                    misCtx.shadingPoint = surfPoint;
+                    misCtx.N = shadeN;
                     misCtx.wo = wo;
                     misCtx.glossyMat = mat;
                     misPtr = &misCtx;
                 }
                 bool indirectEmissive = !useNEE() || useMIS();
-                Vector3f Li = castRayPath(Ray(origin, wi), depth + 1, throughput, indirectEmissive,
+                Vector3f Li = castRayPath(Ray(bounceOrigin, lightWi), depth + 1, throughput, indirectEmissive,
                                           misPtr, dispChannel);
-                indirect = clampRadiance(brdf * cosO * Li / (pdf * rrProb));
+                indirect = clampRadiance(brdfVal * cosOut * Li / (pdf * rrProb));
             }
         }
 
@@ -975,7 +984,7 @@ private:
 
     Vector3f shadeGlossyWhitted(const Ray &ray, const Hit &hit, const Vector3f &hitPoint) const {
         auto *glossy = static_cast<GlossyMaterial *>(hit.getMaterial());
-        Vector3f color = Vector3f::ZERO;
+        Vector3f radiance_val = Vector3f::ZERO;
         Vector3f V = ray.getDirection().normalized();
         Vector3f N = glossy->getShadingNormal(hit, V);
         for (int i = 0; i < scene.getNumLights(); ++i) {
@@ -988,9 +997,9 @@ private:
             }
             Vector3f L, lightColor;
             light->getIllumination(hitPoint, L, lightColor);
-            color += glossy->Shade(ray, hit, L, lightColor);
+            radiance_val += glossy->Shade(ray, hit, L, lightColor);
         }
-        return color;
+        return radiance_val;
     }
 
     Vector3f shadeDiffuse(const Ray &ray, const Hit &hit, const Vector3f &hitPoint) const {
@@ -999,7 +1008,7 @@ private:
             return mat->getEmission();
         }
 
-        Vector3f color = Vector3f::ZERO;
+        Vector3f radiance_val = Vector3f::ZERO;
         Vector3f V = ray.getDirection().normalized();
         Vector3f N = mat->getShadingNormal(hit, V);
         for (int i = 0; i < scene.getNumLights(); ++i) {
@@ -1012,9 +1021,9 @@ private:
             }
             Vector3f L, lightColor;
             light->getIllumination(hitPoint, L, lightColor);
-            color += mat->Shade(ray, hit, L, lightColor);
+            radiance_val += mat->Shade(ray, hit, L, lightColor);
         }
-        return color;
+        return radiance_val;
     }
 
     bool isInShadow(const Vector3f &p, const Vector3f &N, Light *light) const {

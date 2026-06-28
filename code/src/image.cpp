@@ -1,3 +1,7 @@
+// 文件说明：图像像素缓冲与 TGA/PPM/BMP 读写。
+// 原创性声明：大多数为已有代码
+// 伽马编码为独立实现。
+
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -21,12 +25,13 @@ void WriteByte( FILE* file, unsigned char b )
     assert( success == 1 );
 }
 
-static float EncodeColorComponent( float c, bool applyGamma )
+static float EncodeColorComponent( float channel, bool applyGamma )
 {
     if ( applyGamma ) {
-        c = std::pow( c < 0.0f ? 0.0f : c, 1.0f / 2.2f );
+        float clamped = channel < 0.0f ? 0.0f : channel;
+        channel = std::pow( clamped, 1.0f / 2.2f );
     }
-    return c;
+    return channel;
 }
 
 unsigned char ClampColorComponent( float c )
@@ -135,7 +140,7 @@ void Image::SavePPM(const char *filename) const {
     // misc header information
     assert(file != NULL);
     fprintf (file, "P6\n");
-    fprintf (file, "# Creator: Image::SavePPM()\n");
+    fprintf (file, "# Creator: Image::SavePPM (PA1-2)\n");
     fprintf (file, "%d %d\n", width,height);
     fprintf (file, "255\n");
     // the data
@@ -277,7 +282,7 @@ Image::SaveBMP(const char *filename, bool applyGamma)
     line = (unsigned char *)malloc(bytesPerLine);
     if (line == NULL)
     {
-        fprintf(stderr, "Can't allocate memory for BMP file.\n");
+        fprintf(stderr, "BMP save failed: out of memory for scanline.\n");
         return(0);
     }
 

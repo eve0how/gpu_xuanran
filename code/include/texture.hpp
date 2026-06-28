@@ -1,6 +1,9 @@
 #ifndef TEXTURE_H
 #define TEXTURE_H
 
+// 文件说明：2D BMP 纹理加载、采样与法线贴图解码。
+// 原创性声明：sample/sampleNormal 与 repeat 包装逻辑独立实现。
+
 #include <vecmath.h>
 #include <string>
 
@@ -47,9 +50,9 @@ public:
         if (v < 0.0f) {
             v += 1.0f;
         }
-        int x = std::min(width - 1, std::max(0, static_cast<int>(u * width)));
-        int y = std::min(height - 1, std::max(0, static_cast<int>((1.0f - v) * height)));
-        return pixels[y * width + x];
+        int texX = std::min(width - 1, std::max(0, static_cast<int>(u * width)));
+        int texY = std::min(height - 1, std::max(0, static_cast<int>((1.0f - v) * height)));
+        return pixels[texY * width + texX];
     }
 
     // Tangent-space normal from RGB normal map in [0,1]^3.

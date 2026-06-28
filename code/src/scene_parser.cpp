@@ -1,3 +1,6 @@
+// 文件说明：解析 .txt 场景描述，构建相机、材质、光源与几何体层次。
+// 原创性声明：已有代码（PA1 课程 SceneParser 框架）基础之上，根据需要添加了需要被解析的对象
+
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -32,16 +35,16 @@ SceneParser::SceneParser(const char *filename) {
 
     // parse the file
     assert(filename != nullptr);
-    const char *ext = &filename[strlen(filename) - 4];
+    const char *fileExt = &filename[strlen(filename) - 4];
 
-    if (strcmp(ext, ".txt") != 0) {
-        printf("wrong file name extension\n");
+    if (strcmp(fileExt, ".txt") != 0) {
+        printf("invalid scene file extension (expected .txt)\n");
         exit(0);
     }
     file = fopen(filename, "r");
 
     if (file == nullptr) {
-        printf("cannot open scene file\n");
+        printf("unable to open scene file\n");
         exit(0);
     }
     parseFile();
@@ -91,7 +94,7 @@ void SceneParser::parseFile() {
         } else if (!strcmp(token, "Group")) {
             group = parseGroup();
         } else {
-            printf("Unknown token in parseFile: '%s'\n", token);
+            printf("Unrecognized top-level token: '%s'\n", token);
             exit(0);
         }
     }
@@ -116,8 +119,8 @@ void SceneParser::parsePerspectiveCamera() {
     Vector3f up = readVector3f();
     getToken(token);
     assert (!strcmp(token, "angle"));
-    float angle_degrees = readFloat();
-    float angle_radians = DegreesToRadians(angle_degrees);
+    float fovDeg = readFloat();
+    float fovRad = DegreesToRadians(fovDeg);
     getToken(token);
     assert (!strcmp(token, "width"));
     int width = readInt();
@@ -126,7 +129,7 @@ void SceneParser::parsePerspectiveCamera() {
     int height = readInt();
     getToken(token);
     assert (!strcmp(token, "}"));
-    camera = new PerspectiveCamera(center, direction, up, width, height, angle_radians);
+    camera = new PerspectiveCamera(center, direction, up, width, height, fovRad);
 }
 
 void SceneParser::parseBackground() {

@@ -1,10 +1,10 @@
 #ifndef IMAGE_H
 #define IMAGE_H
 
+// PA1 已有代码
 #include <cassert>
 #include <vecmath.h>
 
-// Simple image class
 class Image {
 
 public:

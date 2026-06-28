@@ -397,11 +397,26 @@ $$
   </tr>
 </table>
 
-**视觉差异分析**（对应 §2.6.1 三维度）：
+#### 画面差异（可观察）
 
-1. **全局光照**：Whitted（图 2.6a）红/绿墙与邻接面 **硬切**，无间接色溢；`path_nee`（图 2.6b）地板与侧墙可见 **红/绿渗透**，整体更亮（均值 ≈0.53 vs ≈0.46）。
-2. **阴影**：Whitted 球体与立方体下 **锐利硬阴影**；`path_nee` 直接光阴影仍硬，但阴影内与接触区有 **间接光填充**，暗部不死黑。
-3. **焦散**：Whitted 玻璃立方体 **确定性折射** 至地板，亮斑边界清晰；`path_nee` 同样可见焦散，但更 **扩散、有噪**，属 MC 估计特性。
+对照图 2.6a 与 2.6b（同几何、同点光 `(0, 1.9, 0)`）：
+
+- **全局光照**：Whitted 红/绿墙与地板 **硬切、无渗色**（线性均值 ≈0.46）；`path_nee` 地板、后墙、球侧可见 **红/绿 color bleeding**，全图更亮（≈0.53）。
+- **阴影**：Whitted 球体/立方体下 **全黑硬阴影**；`path_nee` 直接光阴影仍硬，暗部有 **间接灰/色填充**。
+- **高光**：Whitted 镜面球 **锐利反射**、与死黑阴影对比强；path 周围漫射面被间接照亮，对比 **略弱**。
+- **焦散与噪声**：Whitted 玻璃立方体下地板亮斑 **边界清晰、无噪**；path 同位置焦散 **更柔、带 MC 颗粒**（128 SPP 墙/地板/过渡区仍见噪）。
+
+#### 差异原因分析
+
+两图差异源于 **Whitted 递归终止** 与 **路径积分 + NEE** 的不同物理近似，而非参数错误。
+
+**1. 递归策略 → 有无 GI。** Whitted 漫反射命中后 **终止**，`shadeDiffuse` 仅累加点光 Phong **直接光**；镜面/玻璃仍 **确定性** 追反射/折射子射线。`path_nee` 在命中点 NEE 注入直接光后，按余弦半球 **BRDF 继续弹射**（RR 截断）。故 Whitted 无法建立红墙→地板→邻墙的二次反射；path 经 albedo 弹射产生 color bleeding 并抬升亮度。
+
+**2. 直接光与阴影。** 两模式对同一点光均发 **单条阴影射线**，**直接光阴影同为硬边界**。差异在暗部：Whitted 阴影内无间接通道；`path_nee` 仍可通过墙→地板等 **间接路径** 获 radiance，接触区略亮、不死黑。
+
+**3. 材质分支。** 镜面球、贴地玻璃在 Whitted 中走 **确定性反射/折射链**，高光与地板焦散 **锐利可复现**；`path_nee` 以 **MC 路径积分** 估计同类事件，折射与漫射混合使焦散需高 SPP 才收敛。周围间接抬亮也改变镜面球与环境的 **视觉对比**。
+
+**4. 采样与噪声。** Whitted 每像素 **1 条** primary ray、无随机 BRDF 采样 → **无 MC 噪、边缘最锐**，代价是无 GI。`path_nee` 128 路径估计期望值，GI 稳定但焦散等 **低概率事件** 方差仍大（与 §3.2 SPP 局限一致）。
 
 > 复现：`./build/PA1-2 testcases/scene_whitted_path_compare.txt … whitted 1 gamma omp` 与 `path_nee 128 gamma omp`；场景说明见 `testcases/scene_whitted_path_compare.README.txt`。
 
@@ -946,22 +961,7 @@ cp output/final/classic_mis.png results/classic_mis.png
 
 ![经典 Cornell MIS](results/classic_mis.png)
 
-*图 2.15b：经典 Cornell — `path_mis` 15000 SPP，`gamma` + `cuda` + `dispersion`（色散仅作用于玻璃立方体；球体坐标见 `testcases/scene_classic_mis.README.txt`）。*
-
-#### 2.15.5 三龙材质展台（`scene_dragon_showcase.txt`）
-
-暗色 Cornell / 博物馆底座风格：三只 `mesh/dragon_8k.obj` 实例并排展示三种材质——**左**色散玻璃（IOR 1.52，`dispersionDelta 0.12`）、**中**金色 GGX 光泽（roughness 0.16）、**右**完美镜面。相机略俯视，天花板面光照明。
-
-```bash
-./build/PA1-2 testcases/scene_dragon_showcase.txt output/final/dragon_showcase.bmp \
-    path_mis 64 gamma cuda dispersion
-python3 -c "from PIL import Image; Image.open('output/final/dragon_showcase.bmp').save('output/final/dragon_showcase.png')"
-cp output/final/dragon_showcase.png results/dragon_showcase.png
-```
-
-![三龙材质展台](results/dragon_showcase.png)
-
-*图 2.15c：三龙展台 — `path_mis` 64 SPP，`gamma` + `cuda` + `dispersion`（左色散玻璃 / 中金 GGX / 右镜面；mesh 用 `dragon_8k.obj`）。*
+*图 2.15b：经典 Cornell — `path_mis` 15000 SPP，`gamma` + `cuda` + `dispersion`（色散仅作用于玻璃立方体，效果不是很明显；球体坐标见 `testcases/scene_classic_mis.README.txt`）。*
 
 ---
 
@@ -985,7 +985,7 @@ cp output/final/dragon_showcase.png results/dragon_showcase.png
 | OpenMP 串行/并行 | §2.12.3 | `accel_cpu_no_omp_path32.png`、`accel_cpu_omp_path32.png` |
 | CUDA vs CPU | §2.13.3 | `accel_cpu_bunny_whitted.png`、`accel_gpu_bunny_path64.png` |
 | 抗锯齿 SPP 1/16 | §2.14.3 | 图 2.14a–b |
-| **综合展示** | §2.15 | 图 2.15b–c（`classic_mis`、`dragon_showcase`） |
+| **综合展示** | §2.15 | 图 2.15b（`classic_mis`） |
 
 # 三、补充说明
 
@@ -1125,6 +1125,4 @@ for name in ('aa_before', 'aa_after'):
 mkdir -p output/final results
 ./build/PA1-2 testcases/scene_classic_mis.txt output/final/classic_mis.bmp path_mis 15000 gamma cuda dispersion
 python3 -c "from PIL import Image; Image.open('output/final/classic_mis.bmp').save('results/classic_mis.png')"
-./build/PA1-2 testcases/scene_dragon_showcase.txt output/final/dragon_showcase.bmp path_mis 64 gamma cuda dispersion
-python3 -c "from PIL import Image; Image.open('output/final/dragon_showcase.bmp').save('results/dragon_showcase.png')"
 ```

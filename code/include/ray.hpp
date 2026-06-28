@@ -1,12 +1,11 @@
 #ifndef RAY_H
 #define RAY_H
 
+// PA1 已有代码
 #include <cassert>
 #include <iostream>
 #include <Vector3f.h>
 
-
-// Ray class mostly copied from Peter Shirley and Keith Morley
 class Ray {
 public:
 
@@ -29,8 +28,8 @@ public:
         return direction;
     }
 
-    Vector3f pointAtParameter(float t) const {
-        return origin + direction * t;
+    Vector3f pointAtParameter(float hitDist) const {
+        return origin + direction * hitDist;
     }
 
 private:

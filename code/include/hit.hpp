@@ -1,6 +1,8 @@
 #ifndef HIT_H
 #define HIT_H
 
+// 文件说明：射线-物体交点记录 t、法线、UV 与 TBN 切线帧。
+// 原创性声明：参考已有代码（PA1 Hit 类），UV/TBN 扩展字段独立实现。
 #include <vecmath.h>
 #include "ray.hpp"
 
@@ -55,8 +57,8 @@ public:
         normal = n;
     }
 
-    void set(float _t, Material *m, const Vector3f &n) {
-        t = _t;
+    void set(float hitDist, Material *m, const Vector3f &n) {
+        t = hitDist;
         material = m;
         normal = n;
         hasUv = false;

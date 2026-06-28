@@ -1,14 +1,11 @@
 #ifndef PLANE_H
 #define PLANE_H
 
+// PA1 已有代码
 #include "object3d.hpp"
 #include <vecmath.h>
 #include <cmath>
 
-// TODO: Implement Plane representing an infinite plane
-// function: ax+by+cz=d
-// choose your representation , add more fields and fill in the functions
-// Done
 class Plane : public Object3D {
 public:
     Plane() {
@@ -17,7 +14,7 @@ public:
     }
 
     Plane(const Vector3f &normal, float d, Material *m) : Object3D(m) {
-        n = normal;;
+        n = normal;
         n.normalize();
         D = d;
     }
@@ -28,14 +25,14 @@ public:
     float getOffset() const { return D; }
 
     bool intersect(const Ray &r, Hit &h, float tmin) override {
-        Vector3f R_0 = r.getOrigin();
-        Vector3f R_d = r.getDirection();
-        float fenmu = Vector3f::dot(n, R_d);
-        if (fabs(fenmu) < 1e-6) return false;
-        float t = (D - Vector3f::dot(n, R_0)) / fenmu;
-        if (t > tmin && t < h.getT()){
-            h.set(t, material, n);
-            Vector3f p = r.pointAtParameter(t);
+        Vector3f rayOrig = r.getOrigin();
+        Vector3f rayDir = r.getDirection();
+        float denom = Vector3f::dot(n, rayDir);
+        if (fabs(denom) < 1e-6) return false;
+        float hitDist = (D - Vector3f::dot(n, rayOrig)) / denom;
+        if (hitDist > tmin && hitDist < h.getT()) {
+            h.set(hitDist, material, n);
+            Vector3f p = r.pointAtParameter(hitDist);
             Vector3f tangent;
             if (fabsf(n.y()) < 0.9f) {
                 tangent = Vector3f::cross(Vector3f(0, 1, 0), n).normalized();

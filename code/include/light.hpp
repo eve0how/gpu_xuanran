@@ -1,6 +1,9 @@
 #ifndef LIGHT_H
 #define LIGHT_H
 
+// 文件说明：点光、方向光与三角面光源抽象。
+// 原创性声明：已有代码（PA1 Light 框架）为基础，AreaLight 扩展独立实现。
+
 #include <cfloat>
 #include <Vector3f.h>
 #include "object3d.hpp"
@@ -60,8 +63,9 @@ public:
     ~PointLight() override = default;
 
     void getIllumination(const Vector3f &p, Vector3f &dir, Vector3f &col) const override {
-        dir = (position - p);
-        dir = dir / dir.length();
+        Vector3f toLight = (position - p);
+        toLight = toLight / toLight.length();
+        dir = toLight;
         col = color;
     }
 
@@ -90,8 +94,8 @@ public:
     ~AreaLight() override = default;
 
     void getIllumination(const Vector3f &p, Vector3f &dir, Vector3f &col) const override {
-        Vector3f center = (vertex0 + vertex1 + vertex2) / 3.0f;
-        dir = center - p;
+        Vector3f triCenter = (vertex0 + vertex1 + vertex2) / 3.0f;
+        dir = triCenter - p;
         dir = dir / dir.length();
         col = color;
     }

@@ -1,3 +1,7 @@
+// 文件说明：将 SceneParser 场景树展平为 GPU 可用的 SOA 数组，并可选构建 BVH。
+// 原创性声明：参考已有代码（PA1 场景对象层次与 CUDA 上传模式），
+// 各类几何体变换与材质映射逻辑为按作业接口独立实现。
+
 #include "cuda_types.h"
 #include "bvh_builder.hpp"
 #include "scene_parser.hpp"
@@ -23,7 +27,7 @@ void setGpuSceneBuildUseBVH(bool use) { g_gpuSceneBuildUseBVH = use; }
 #include <algorithm>
 #include <cmath>
 
-static void toGpuVec3(const Vector3f &v, float out[3]) {
+static void copyVec3ToGpu(const Vector3f &v, float out[3]) {
     out[0] = v[0];
     out[1] = v[1];
     out[2] = v[2];
@@ -33,7 +37,7 @@ static Vector3f transformPointMat(const Matrix4f &m, const Vector3f &p) {
     return (m * Vector4f(p, 1.0f)).xyz();
 }
 
-static float uniformScaleFactor(const Matrix4f &m) {
+static float extractUniformScale(const Matrix4f &m) {
     Vector3f col0(m(0, 0), m(1, 0), m(2, 0));
     return col0.length();
 }
@@ -109,7 +113,7 @@ private:
     Vector3f bboxMax{-1e30f, -1e30f, -1e30f};
     bool hasBbox = false;
 
-    void expandBbox(const Vector3f &p) {
+    void growBbox(const Vector3f &p) {
         hasBbox = true;
         bboxMin.x() = std::min(bboxMin.x(), p.x());
         bboxMin.y() = std::min(bboxMin.y(), p.y());
@@ -119,10 +123,10 @@ private:
         bboxMax.z() = std::max(bboxMax.z(), p.z());
     }
 
-    void expandBboxTriangle(const Vector3f &a, const Vector3f &b, const Vector3f &c) {
-        expandBbox(a);
-        expandBbox(b);
-        expandBbox(c);
+    void growBboxTriangle(const Vector3f &a, const Vector3f &b, const Vector3f &c) {
+        growBbox(a);
+        growBbox(b);
+        growBbox(c);
     }
 
     void buildMaterialMap() {
@@ -131,7 +135,7 @@ private:
         }
     }
 
-    int matIdFor(Material *mat) const {
+    int lookupMaterialId(Material *mat) const {
         if (mat == nullptr) {
             return 0;
         }
@@ -145,7 +149,7 @@ private:
             Material *mat = scene.getMaterial(i);
             GpuMaterial g{};
             g.type = static_cast<int>(mat->getType());
-            toGpuVec3(mat->getDiffuseColor(), g.diffuse);
+            copyVec3ToGpu(mat->getDiffuseColor(), g.diffuse);
             g.emission[0] = g.emission[1] = g.emission[2] = 0.0f;
             g.specular[0] = g.specular[1] = g.specular[2] = 0.0f;
             g.ior = 1.0f;
@@ -153,30 +157,30 @@ private:
             g.f0[0] = g.f0[1] = g.f0[2] = 0.04f;
             g.dispersionDelta = 0.0f;
             g.shininess = 0.0f;
-            toGpuVec3(mat->getSpecularColor(), g.specular);
+            copyVec3ToGpu(mat->getSpecularColor(), g.specular);
             g.shininess = mat->getShininess();
 
             switch (mat->getType()) {
                 case MaterialType::REFLECT: {
                     auto *rm = static_cast<ReflectMaterial *>(mat);
-                    toGpuVec3(rm->getReflectColor(), g.specular);
+                    copyVec3ToGpu(rm->getReflectColor(), g.specular);
                     break;
                 }
                 case MaterialType::REFRACT: {
                     auto *rm = static_cast<RefractMaterial *>(mat);
-                    toGpuVec3(rm->getRefractColor(), g.specular);
+                    copyVec3ToGpu(rm->getRefractColor(), g.specular);
                     g.ior = rm->getRefractIndex();
                     g.dispersionDelta = rm->getDispersionDelta();
                     break;
                 }
                 case MaterialType::EMISSIVE:
-                    toGpuVec3(mat->getEmission(), g.emission);
+                    copyVec3ToGpu(mat->getEmission(), g.emission);
                     break;
                 case MaterialType::GLOSSY: {
                     auto *gm = static_cast<GlossyMaterial *>(mat);
-                    toGpuVec3(gm->getSpecularColor(), g.specular);
+                    copyVec3ToGpu(gm->getSpecularColor(), g.specular);
                     g.roughness = gm->getRoughness();
-                    toGpuVec3(gm->getF0(), g.f0);
+                    copyVec3ToGpu(gm->getF0(), g.f0);
                     break;
                 }
                 default:
@@ -190,25 +194,25 @@ private:
         for (int i = 0; i < scene.getNumLights(); ++i) {
             if (auto *area = dynamic_cast<AreaLight *>(scene.getLight(i))) {
                 GpuAreaLight g{};
-                toGpuVec3(area->getVertex0(), g.v0);
-                toGpuVec3(area->getVertex1(), g.v1);
-                toGpuVec3(area->getVertex2(), g.v2);
-                toGpuVec3(area->getColor(), g.color);
+                copyVec3ToGpu(area->getVertex0(), g.v0);
+                copyVec3ToGpu(area->getVertex1(), g.v1);
+                copyVec3ToGpu(area->getVertex2(), g.v2);
+                copyVec3ToGpu(area->getColor(), g.color);
                 areaLights->push_back(g);
-                expandBboxTriangle(area->getVertex0(), area->getVertex1(), area->getVertex2());
+                growBboxTriangle(area->getVertex0(), area->getVertex1(), area->getVertex2());
             } else if (auto *point = dynamic_cast<PointLight *>(scene.getLight(i))) {
                 GpuPointLight g{};
-                toGpuVec3(point->getPosition(), g.pos);
+                copyVec3ToGpu(point->getPosition(), g.pos);
                 Vector3f dir, col;
                 point->getIllumination(Vector3f::ZERO, dir, col);
-                toGpuVec3(col, g.color);
+                copyVec3ToGpu(col, g.color);
                 pointLights->push_back(g);
             } else if (auto *dirLight = dynamic_cast<DirectionalLight *>(scene.getLight(i))) {
                 GpuDirectionalLight g{};
                 Vector3f L, col;
                 dirLight->getIllumination(Vector3f::ZERO, L, col);
-                toGpuVec3(L, g.direction);
-                toGpuVec3(col, g.color);
+                copyVec3ToGpu(L, g.direction);
+                copyVec3ToGpu(col, g.color);
                 directionalLights->push_back(g);
             }
         }
@@ -216,11 +220,11 @@ private:
 
     void buildCamera() {
         Camera *cam = scene.getCamera();
-        toGpuVec3(cam->getCenter(), camera->center);
-        toGpuVec3(cam->getDirection(), camera->direction);
-        toGpuVec3(cam->getHorizontal(), camera->horizontal);
-        toGpuVec3(cam->getUp(), camera->up);
-        toGpuVec3(scene.getBackgroundColor(), camera->bg);
+        copyVec3ToGpu(cam->getCenter(), camera->center);
+        copyVec3ToGpu(cam->getDirection(), camera->direction);
+        copyVec3ToGpu(cam->getHorizontal(), camera->horizontal);
+        copyVec3ToGpu(cam->getUp(), camera->up);
+        copyVec3ToGpu(scene.getBackgroundColor(), camera->bg);
         auto *persp = dynamic_cast<PerspectiveCamera *>(cam);
         if (persp != nullptr) {
             persp->getProjectionParams(camera->cx, camera->cy, camera->fx, camera->fy);
@@ -233,10 +237,10 @@ private:
 
     void addTriangle(const Vector3f &a, const Vector3f &b, const Vector3f &c, Material *mat) {
         GpuTriangle tri{};
-        toGpuVec3(a, tri.v0);
-        toGpuVec3(b, tri.v1);
-        toGpuVec3(c, tri.v2);
-        tri.matId = matIdFor(mat);
+        copyVec3ToGpu(a, tri.v0);
+        copyVec3ToGpu(b, tri.v1);
+        copyVec3ToGpu(c, tri.v2);
+        tri.matId = lookupMaterialId(mat);
         triangles->push_back(tri);
     }
 
@@ -245,8 +249,8 @@ private:
             return;
         }
         if (auto *group = dynamic_cast<Group *>(obj)) {
-            for (int i = 0; i < group->getGroupSize(); ++i) {
-                flattenObject(group->getObject(i), world);
+            for (int childIdx = 0; childIdx < group->getGroupSize(); ++childIdx) {
+                flattenObject(group->getObject(childIdx), world);
             }
             return;
         }
@@ -257,34 +261,34 @@ private:
         if (auto *sphere = dynamic_cast<Sphere *>(obj)) {
             GpuSphere g{};
             Vector3f c = transformPointMat(world, sphere->getCenter());
-            toGpuVec3(c, g.center);
-            g.radius = sphere->getRadius() * uniformScaleFactor(world);
-            g.matId = matIdFor(sphere->getMaterial());
+            copyVec3ToGpu(c, g.center);
+            g.radius = sphere->getRadius() * extractUniformScale(world);
+            g.matId = lookupMaterialId(sphere->getMaterial());
             spheres->push_back(g);
             float r = g.radius;
-            expandBbox(c + Vector3f(r, r, r));
-            expandBbox(c - Vector3f(r, r, r));
+            growBbox(c + Vector3f(r, r, r));
+            growBbox(c - Vector3f(r, r, r));
             return;
         }
         if (auto *plane = dynamic_cast<Plane *>(obj)) {
             GpuPlane g{};
             Vector3f n = (world * Vector4f(plane->getNormal(), 0.0f)).xyz().normalized();
             Vector3f p = transformPointMat(world, plane->getNormal() * plane->getOffset());
-            toGpuVec3(n, g.normal);
+            copyVec3ToGpu(n, g.normal);
             g.offset = Vector3f::dot(n, p);
-            g.matId = matIdFor(plane->getMaterial());
+            g.matId = lookupMaterialId(plane->getMaterial());
             planes->push_back(g);
             // Large finite slab for plane bbox (Cornell walls).
             Vector3f absN(fabsf(n.x()), fabsf(n.y()), fabsf(n.z()));
             if (absN.y() > 0.9f) {
-                expandBbox(Vector3f(-2.0f, p.y(), -2.0f));
-                expandBbox(Vector3f(2.0f, p.y(), 2.0f));
+                growBbox(Vector3f(-2.0f, p.y(), -2.0f));
+                growBbox(Vector3f(2.0f, p.y(), 2.0f));
             } else if (absN.x() > 0.9f) {
-                expandBbox(Vector3f(p.x(), -2.0f, -2.0f));
-                expandBbox(Vector3f(p.x(), 2.0f, 2.0f));
+                growBbox(Vector3f(p.x(), -2.0f, -2.0f));
+                growBbox(Vector3f(p.x(), 2.0f, 2.0f));
             } else {
-                expandBbox(Vector3f(-2.0f, -2.0f, p.z()));
-                expandBbox(Vector3f(2.0f, 2.0f, p.z()));
+                growBbox(Vector3f(-2.0f, -2.0f, p.z()));
+                growBbox(Vector3f(2.0f, 2.0f, p.z()));
             }
             return;
         }
@@ -293,7 +297,7 @@ private:
             Vector3f b = transformPointMat(world, tri->vertices[1]);
             Vector3f c = transformPointMat(world, tri->vertices[2]);
             addTriangle(a, b, c, tri->getMaterial());
-            expandBboxTriangle(a, b, c);
+            growBboxTriangle(a, b, c);
             return;
         }
         if (auto *mesh = dynamic_cast<Mesh *>(obj)) {
@@ -302,7 +306,7 @@ private:
                 Vector3f b = transformPointMat(world, mesh->v[idx.x[1]]);
                 Vector3f c = transformPointMat(world, mesh->v[idx.x[2]]);
                 addTriangle(a, b, c, mesh->getMaterial());
-                expandBboxTriangle(a, b, c);
+                growBboxTriangle(a, b, c);
             }
         }
     }

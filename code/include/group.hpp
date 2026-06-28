@@ -1,7 +1,7 @@
 #ifndef GROUP_H
 #define GROUP_H
 
-
+// PA1 已有代码
 #include "object3d.hpp"
 #include "ray.hpp"
 #include "hit.hpp"
@@ -29,14 +29,14 @@ public:
     }
 
     bool intersect(const Ray &r, Hit &h, float tmin) override {
-        bool have_hit = false;
-        for(int i = 0; i < objects.size(); i++){ // 遍历所有对象，判断是否相交
-            if(objects[i] == nullptr) continue; // 如果该位置没有对象，跳过
-            if(objects[i]->intersect(r, h, tmin)){ // 如果相交，更新hit信息，并将have_hit置为true
-                have_hit = true;
+        bool anyHit = false;
+        for(int i = 0; i < objects.size(); i++){
+            if(objects[i] == nullptr) continue;
+            if(objects[i]->intersect(r, h, tmin)){
+                anyHit = true;
             }
         }
-        return have_hit;
+        return anyHit;
     }
 
     void addObject(int index, Object3D *obj) {

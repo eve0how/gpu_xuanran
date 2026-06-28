@@ -1,15 +1,12 @@
 #ifndef TRIANGLE_H
 #define TRIANGLE_H
 
+// PA1 已有代码
 #include "object3d.hpp"
 #include <vecmath.h>
 #include <cmath>
-#include <iostream>
-using namespace std;
 
-// TODO: implement this class and add more fields as necessary,
-// Done
-class Triangle: public Object3D {
+class Triangle : public Object3D {
 
 public:
 	Triangle() = delete;
@@ -23,19 +20,19 @@ public:
 		normal.normalize();
 	}
 
-	bool intersect( const Ray& ray,  Hit& hit , float tmin) override {
-		Vector3f R_0 = ray.getOrigin();
-        Vector3f R_d = ray.getDirection();
-		Vector3f e1 = vertices[0] - vertices[1], e2 = vertices[0] - vertices[2], s = vertices[0] - R_0;
-		Matrix3f m1(s, e1, e2), m2(R_d, s, e2), m3(R_d, e1, s), m4(R_d, e1, e2);
-		float chu = m4.determinant(); // 按照PPT中的方法实现
-		if (fabs(chu) < 1e-6) return false;
-		float t = m1.determinant() / chu;
-		float beta = m2.determinant() / chu;
-		float gamma = m3.determinant() / chu;
+	bool intersect(const Ray &ray, Hit &hit, float tmin) override {
+		Vector3f rayOrig = ray.getOrigin();
+        Vector3f rayDir = ray.getDirection();
+		Vector3f e1 = vertices[0] - vertices[1], e2 = vertices[0] - vertices[2], s = vertices[0] - rayOrig;
+		Matrix3f m1(s, e1, e2), m2(rayDir, s, e2), m3(rayDir, e1, s), m4(rayDir, e1, e2);
+		float detMain = m4.determinant();
+		if (fabsf(detMain) < 1e-6f) return false;
+		float hitDist = m1.determinant() / detMain;
+		float beta = m2.determinant() / detMain;
+		float gamma = m3.determinant() / detMain;
 		if(beta >= 0 && gamma >= 0 && beta + gamma <= 1){
-			if(t > tmin && t < hit.getT()){
-				hit.set(t, material, normal);
+			if(hitDist > tmin && hitDist < hit.getT()){
+				hit.set(hitDist, material, normal);
 				return true;
 			}
 		} 

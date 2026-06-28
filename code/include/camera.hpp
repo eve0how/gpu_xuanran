@@ -1,6 +1,7 @@
 #ifndef CAMERA_H
 #define CAMERA_H
 
+// PA1 已有代码
 #include "ray.hpp"
 #include <vecmath.h>
 #include <float.h>
@@ -58,11 +59,11 @@ public:
 
     Ray generateRay(const Vector2f &point) override {
         // 
-        Vector3f R_c((point[0] - cx) / fx, (cy - point[1]) / fy, 1); // ray direction in camera space
-        Matrix3f R(horizontal, -up, direction); // rotation matrix
-        Vector3f R_w = R * R_c;
-        Vector3f O_w = center;
-        return Ray(O_w, R_w);
+        Vector3f camDir((point[0] - cx) / fx, (cy - point[1]) / fy, 1);
+        Matrix3f rotMat(horizontal, -up, direction);
+        Vector3f worldDir = rotMat * camDir;
+        Vector3f worldOrig = center;
+        return Ray(worldOrig, worldDir);
     }
 
     void getProjectionParams(float &outCx, float &outCy, float &outFx, float &outFy) const {

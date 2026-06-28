@@ -1,3 +1,7 @@
+// 文件说明：BMP 纹理读写与程序化材质贴图生成。
+// 原创性声明：参考已有代码（BMP 格式与噪声贴图思路），
+// 各类 write* 程序化纹理与 fbm 噪声链为独立实现。
+
 #include "texture.hpp"
 
 #include <cstdio>
@@ -26,15 +30,15 @@ struct BMPHeader {
 };
 #pragma pack(pop)
 
-static unsigned char clampByte(float x) {
-    int v = static_cast<int>(x * 255.0f + 0.5f);
-    if (v < 0) {
-        v = 0;
+static unsigned char clampByte(float channel) {
+    int byteVal = static_cast<int>(channel * 255.0f + 0.5f);
+    if (byteVal < 0) {
+        byteVal = 0;
     }
-    if (v > 255) {
-        v = 255;
+    if (byteVal > 255) {
+        byteVal = 255;
     }
-    return static_cast<unsigned char>(v);
+    return static_cast<unsigned char>(byteVal);
 }
 
 static unsigned int hashPixel(int x, int y, int salt) {
@@ -151,7 +155,7 @@ static bool writeRGBBMP(const char *filename, int w, int h, const unsigned char 
 Texture *Texture::loadBMP(const char *filename) {
     FILE *file = fopen(filename, "rb");
     if (file == nullptr) {
-        fprintf(stderr, "Cannot open texture: %s\n", filename);
+        fprintf(stderr, "Failed to open texture file: %s\n", filename);
         return nullptr;
     }
 
@@ -159,7 +163,7 @@ Texture *Texture::loadBMP(const char *filename) {
     if (fread(&header, sizeof(header), 1, file) != 1 ||
         header.bfType[0] != 'B' || header.bfType[1] != 'M' ||
         header.biBitCount != 24 || header.biCompression != 0) {
-        fprintf(stderr, "Unsupported BMP texture: %s\n", filename);
+        fprintf(stderr, "Unsupported BMP format: %s\n", filename);
         fclose(file);
         return nullptr;
     }
@@ -216,8 +220,8 @@ bool Texture::writeCheckerboardBMP(const char *filename, int size, int cells) {
     int cellSize = std::max(1, size / cells);
     for (int y = 0; y < size; ++y) {
         for (int x = 0; x < size; ++x) {
-            bool dark = ((x / cellSize) + (y / cellSize)) % 2 == 0;
-            unsigned char c = dark ? 60 : 220;
+            bool darkCell = ((x / cellSize) + (y / cellSize)) % 2 == 0;
+            unsigned char c = darkCell ? 60 : 220;
             line[3 * x] = c;
             line[3 * x + 1] = c;
             line[3 * x + 2] = c;

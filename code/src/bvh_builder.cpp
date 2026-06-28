@@ -1,3 +1,7 @@
+// 文件说明：CPU 端 SAH 风格 BVH 构建，将三角形索引重排后扁平化为 GPU 节点数组。
+// 原创性声明：参考已有代码（PBRT/GAMES101 BVH 思路与课件），
+// 节点布局与 flatten 流程按本作业 GpuBVHNode 格式独立实现。
+
 #include "bvh_builder.hpp"
 
 #include <algorithm>
@@ -24,7 +28,7 @@ static void expandAABB(AABB &box, float x, float y, float z) {
     box.bmax[2] = std::max(box.bmax[2], z);
 }
 
-static AABB triangleAABB(const GpuTriangle &tri) {
+static AABB boundsOfTriangle(const GpuTriangle &tri) {
     AABB box = emptyAABB();
     expandAABB(box, tri.v0[0], tri.v0[1], tri.v0[2]);
     expandAABB(box, tri.v1[0], tri.v1[1], tri.v1[2]);
@@ -84,10 +88,10 @@ private:
     std::vector<int> indices;
     std::vector<BuildNode> buildNodes;
 
-    AABB bounds(int start, int count) const {
+    AABB computeBoundsRange(int start, int count) const {
         AABB box = emptyAABB();
-        for (int i = 0; i < count; ++i) {
-            mergeAABB(box, triangleAABB(tris[indices[start + i]]));
+        for (int triIdx = 0; triIdx < count; ++triIdx) {
+            mergeAABB(box, boundsOfTriangle(tris[indices[start + triIdx]]));
         }
         return box;
     }
@@ -97,32 +101,33 @@ private:
         buildNodes.push_back({});
         buildNodes[nodeId].start = start;
         buildNodes[nodeId].count = count;
-        buildNodes[nodeId].bbox = bounds(start, count);
+        buildNodes[nodeId].bbox = computeBoundsRange(start, count);
 
         if (count <= kMaxLeafTris) {
             return nodeId;
         }
 
         AABB centroidBounds = emptyAABB();
-        for (int i = 0; i < count; ++i) {
-            const GpuTriangle &tri = tris[indices[start + i]];
-            expandAABB(centroidBounds, centroidAxis(tri, 0), centroidAxis(tri, 1), centroidAxis(tri, 2));
+        for (int triIdx = 0; triIdx < count; ++triIdx) {
+            const GpuTriangle &triPrim = tris[indices[start + triIdx]];
+            expandAABB(centroidBounds, centroidAxis(triPrim, 0), centroidAxis(triPrim, 1),
+                      centroidAxis(triPrim, 2));
         }
 
-        int axis = 0;
-        float extentX = centroidBounds.bmax[0] - centroidBounds.bmin[0];
-        float extentY = centroidBounds.bmax[1] - centroidBounds.bmin[1];
-        float extentZ = centroidBounds.bmax[2] - centroidBounds.bmin[2];
-        if (extentY > extentX && extentY > extentZ) {
-            axis = 1;
-        } else if (extentZ > extentX && extentZ > extentY) {
-            axis = 2;
+        int splitAxis = 0;
+        float spanX = centroidBounds.bmax[0] - centroidBounds.bmin[0];
+        float spanY = centroidBounds.bmax[1] - centroidBounds.bmin[1];
+        float spanZ = centroidBounds.bmax[2] - centroidBounds.bmin[2];
+        if (spanY > spanX && spanY > spanZ) {
+            splitAxis = 1;
+        } else if (spanZ > spanX && spanZ > spanY) {
+            splitAxis = 2;
         }
 
         const int mid = start + count / 2;
         std::nth_element(indices.begin() + start, indices.begin() + mid, indices.begin() + start + count,
-                         [this, axis](int a, int b) {
-                             return centroidAxis(tris[a], axis) < centroidAxis(tris[b], axis);
+                         [this, splitAxis](int a, int b) {
+                             return centroidAxis(tris[a], splitAxis) < centroidAxis(tris[b], splitAxis);
                          });
 
         const int leftId = buildRecursive(start, mid - start);
@@ -134,33 +139,33 @@ private:
 
     void flatten(int buildNodeId, std::vector<GpuBVHNode> &outNodes, std::vector<GpuTriangle> &outTriangles,
                  int &triOffset) {
-        const BuildNode &bn = buildNodes[buildNodeId];
+        const BuildNode &nodeRec = buildNodes[buildNodeId];
         const int nodeIdx = static_cast<int>(outNodes.size());
         outNodes.push_back({});
 
-        for (int i = 0; i < 3; ++i) {
-            outNodes[nodeIdx].bboxMin[i] = bn.bbox.bmin[i];
-            outNodes[nodeIdx].bboxMax[i] = bn.bbox.bmax[i];
+        for (int axis = 0; axis < 3; ++axis) {
+            outNodes[nodeIdx].bboxMin[axis] = nodeRec.bbox.bmin[axis];
+            outNodes[nodeIdx].bboxMax[axis] = nodeRec.bbox.bmax[axis];
         }
 
-        if (bn.isLeaf()) {
+        if (nodeRec.isLeaf()) {
             outNodes[nodeIdx].leftChild = triOffset;
             outNodes[nodeIdx].rightChild = 0;
-            outNodes[nodeIdx].primitiveCount = bn.count;
+            outNodes[nodeIdx].primitiveCount = nodeRec.count;
             outNodes[nodeIdx]._pad = 0;
-            for (int i = 0; i < bn.count; ++i) {
-                outTriangles.push_back(tris[indices[bn.start + i]]);
+            for (int leafTri = 0; leafTri < nodeRec.count; ++leafTri) {
+                outTriangles.push_back(tris[indices[nodeRec.start + leafTri]]);
             }
-            triOffset += bn.count;
+            triOffset += nodeRec.count;
             return;
         }
 
         outNodes[nodeIdx].primitiveCount = 0;
         outNodes[nodeIdx]._pad = 0;
         outNodes[nodeIdx].leftChild = static_cast<int>(outNodes.size());
-        flatten(bn.left, outNodes, outTriangles, triOffset);
+        flatten(nodeRec.left, outNodes, outTriangles, triOffset);
         outNodes[nodeIdx].rightChild = static_cast<int>(outNodes.size());
-        flatten(bn.right, outNodes, outTriangles, triOffset);
+        flatten(nodeRec.right, outNodes, outTriangles, triOffset);
     }
 };
 

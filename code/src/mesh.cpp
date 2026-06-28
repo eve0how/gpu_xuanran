@@ -1,7 +1,9 @@
+// 文件说明：OBJ 网格加载、面法线计算与 Möller–Trumbore 求交。
+// 原创性声明：已有代码（PA1 Mesh 实现）基础之上，平滑法线/纹理坐标与 TBN 插值独立实现。
+
 #include "mesh.hpp"
 #include <fstream>
 #include <iostream>
-#include <algorithm>
 #include <cstdlib>
 #include <utility>
 #include <sstream>
@@ -11,22 +13,22 @@
 bool Mesh::intersectTriangle(const Vector3f &a, const Vector3f &b, const Vector3f &c,
                              const Ray &r, float tmin, float tmax, float &t,
                              float &beta, float &gamma) {
-    Vector3f R_0 = r.getOrigin();
-    Vector3f R_d = r.getDirection();
+    Vector3f rayOrig = r.getOrigin();
+    Vector3f rayDir = r.getDirection();
     Vector3f e1 = a - b;
     Vector3f e2 = a - c;
-    Vector3f s = a - R_0;
+    Vector3f s = a - rayOrig;
     Matrix3f m1(s, e1, e2);
-    Matrix3f m2(R_d, s, e2);
-    Matrix3f m3(R_d, e1, s);
-    Matrix3f m4(R_d, e1, e2);
-    float chu = m4.determinant();
-    if (fabs(chu) < 1e-6) {
+    Matrix3f m2(rayDir, s, e2);
+    Matrix3f m3(rayDir, e1, s);
+    Matrix3f m4(rayDir, e1, e2);
+    float detMain = m4.determinant();
+    if (fabsf(detMain) < 1e-6f) {
         return false;
     }
-    t = m1.determinant() / chu;
-    beta = m2.determinant() / chu;
-    gamma = m3.determinant() / chu;
+    t = m1.determinant() / detMain;
+    beta = m2.determinant() / detMain;
+    gamma = m3.determinant() / detMain;
     if (beta < 0.0f || gamma < 0.0f || beta + gamma > 1.0f) {
         return false;
     }
@@ -49,11 +51,11 @@ bool Mesh::intersect(const Ray &r, Hit &h, float tmin) {
         }
 
         h.set(t, material, n[triId]);
-        float alpha = 1.0f - beta - gamma;
+        float baryAlpha = 1.0f - beta - gamma;
         if (!vn.empty() && triIndex.vn[0] >= 0 && triIndex.vn[1] >= 0 && triIndex.vn[2] >= 0) {
             int nvn = (int) vn.size();
             if (triIndex.vn[0] < nvn && triIndex.vn[1] < nvn && triIndex.vn[2] < nvn) {
-                Vector3f smoothN = vn[triIndex.vn[0]] * alpha + vn[triIndex.vn[1]] * beta +
+                Vector3f smoothN = vn[triIndex.vn[0]] * baryAlpha + vn[triIndex.vn[1]] * beta +
                                    vn[triIndex.vn[2]] * gamma;
                 if (smoothN.length() > 1e-8f) {
                     h.setNormal(smoothN.normalized());
@@ -66,7 +68,7 @@ bool Mesh::intersect(const Ray &r, Hit &h, float tmin) {
                 const Vector2f &uv0 = vt[triIndex.vt[0]];
                 const Vector2f &uv1 = vt[triIndex.vt[1]];
                 const Vector2f &uv2 = vt[triIndex.vt[2]];
-                Vector2f uv = uv0 * alpha + uv1 * beta + uv2 * gamma;
+                Vector2f uv = uv0 * baryAlpha + uv1 * beta + uv2 * gamma;
                 h.setUV(uv);
 
                 Vector3f e1 = b - a;
@@ -93,7 +95,7 @@ Mesh::Mesh(const char *filename, Material *material) : Object3D(material) {
     std::ifstream f;
     f.open(filename);
     if (!f.is_open()) {
-        std::cout << "Cannot open " << filename << "\n";
+        std::cout << "Unable to open mesh file: " << filename << "\n";
         return;
     }
     std::string line;

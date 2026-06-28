@@ -1,6 +1,6 @@
 #ifndef TRANSFORM_H
 #define TRANSFORM_H
-
+// PA1 已有代码
 #include <vecmath.h>
 #include "object3d.hpp"
 
@@ -22,18 +22,18 @@ public:
         transform = m.inverse();
     }
 
-    ~Transform() {
-    }
+    ~Transform() override = default;
+
 
     Object3D *getChild() const { return o; }
 
     Matrix4f getForwardMatrix() const { return transform.inverse(); }
 
-    virtual bool intersect(const Ray &r, Hit &h, float tmin) {
-        Vector3f trSource = transformPoint(transform, r.getOrigin());
-        Vector3f trDirection = transformDirection(transform, r.getDirection());
-        Ray tr(trSource, trDirection);
-        bool inter = o->intersect(tr, h, tmin);
+    bool intersect(const Ray &r, Hit &h, float tmin) override {
+        Vector3f localOrig = transformPoint(transform, r.getOrigin());
+        Vector3f localDir = transformDirection(transform, r.getDirection());
+        Ray localRay(localOrig, localDir);
+        bool inter = o->intersect(localRay, h, tmin);
         if (inter) {
             // Only update normal/TBN; h.set() would clear interpolated UV from mesh hits.
             h.setNormal(transformDirection(transform.transposed(), h.getNormal()).normalized());

@@ -149,9 +149,6 @@ aa_before_zoom.png / aa_after_zoom.png
 §2.15 Final showcases (1024²)
 ------------------------------
 classic_mis.png   — scene_classic_mis.txt, path_mis 15000 gamma cuda dispersion
-dragon_showcase.png — scene_dragon_showcase.txt, path_mis 128 gamma cuda dispersion (mesh/dragon_simple.obj ~1.6k faces)
   mkdir -p output/final results
   ./build/PA1-2 testcases/scene_classic_mis.txt output/final/classic_mis.bmp path_mis 15000 gamma cuda dispersion
   python3 -c "from PIL import Image; Image.open('output/final/classic_mis.bmp').save('results/classic_mis.png')"
-  ./build/PA1-2 testcases/scene_dragon_showcase.txt output/final/dragon_showcase.bmp path_mis 128 gamma cuda dispersion
-  python3 -c "from PIL import Image; Image.open('output/final/dragon_showcase.bmp').save('results/dragon_showcase.png')"
