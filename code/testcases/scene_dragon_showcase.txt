@@ -132,29 +132,29 @@ Group {
     }
     MaterialIndex 6
     Transform {
-        Translate -0.58 0.10 0.12
+        Translate -0.58 0.26 0.12
         YRotate 28
-        UniformScale 0.30
+        UniformScale 0.62
         TriangleMesh {
-            obj_file mesh/dragon.obj
+            obj_file mesh/dragon_simple.obj
         }
     }
     MaterialIndex 7
     Transform {
-        Translate 0 0.12 0.0
+        Translate 0 0.28 0.0
         YRotate -12
-        UniformScale 0.34
+        UniformScale 0.68
         TriangleMesh {
-            obj_file mesh/dragon.obj
+            obj_file mesh/dragon_simple.obj
         }
     }
     MaterialIndex 8
     Transform {
-        Translate 0.58 0.10 0.12
+        Translate 0.58 0.26 0.12
         YRotate -32
-        UniformScale 0.30
+        UniformScale 0.62
         TriangleMesh {
-            obj_file mesh/dragon.obj
+            obj_file mesh/dragon_simple.obj
         }
     }
 }

@@ -1,20 +1,20 @@
 Dragon showcase — scene_dragon_showcase.txt
-===========================================
+==========================================
 
-Dark Cornell / museum pedestal layout, 1024². Three instances of mesh/dragon.obj
-on charcoal pedestals (scaled cube.obj), lit by a modest ceiling area light.
+Three dragons on pedestals (mesh/dragon_simple.obj, decimated from dragon.obj ~3.5k faces each).
 
-Dragon layout (image left → right)
-----------------------------------
-A  (-0.58, 0.10, 0.12)  mat 6  Dispersive glass  IOR 1.52, dispersionDelta 0.12
-B  ( 0.00, 0.12, 0.00)  mat 7  Gold GGX glossy   roughness 0.16
-C  ( 0.58, 0.10, 0.12)  mat 8  Perfect mirror    ReflectiveMaterial
+| Position | Material | Effect |
+|----------|----------|--------|
+| Left  | Refractive IOR 1.52, delta 0.12 | Dispersion (CLI `dispersion`) |
+| Center | Gold GGX Glossy roughness 0.16 | Specular metal |
+| Right | Perfect mirror Reflective | Chrome reflection |
 
-Camera: (0, 0.62, 3.35), looks slightly down (-Z). CLI `dispersion` required for A.
-
-Render (CUDA):
-  cd code && mkdir -p output/final results
+Render:
+  cd code
   ./build/PA1-2 testcases/scene_dragon_showcase.txt output/final/dragon_showcase.bmp \
-      path_mis 64 gamma cuda dispersion
-  python3 -c "from PIL import Image; Image.open('output/final/dragon_showcase.bmp').save('output/final/dragon_showcase.png')"
-  cp output/final/dragon_showcase.png results/dragon_showcase.png
+      path_mis 128 gamma cuda dispersion
+  python3 -c "from PIL import Image; Image.open('output/final/dragon_showcase.bmp').save('results/dragon_showcase.png')"
+
+Note: original dragon.obj has ~871k faces (negative OBJ indices); dragon_simple.obj (~3.5k faces)
+keeps total CUDA triangles under 50k for GPU VRAM. dragon_8k.obj (~8.7k faces) also ships as a
+coarser alternative.

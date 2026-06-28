@@ -29,7 +29,6 @@ constexpr int kRrStartDepth = 8;
 constexpr float kRrMinSurvival = 0.15f;
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kRadianceClamp = 100.0f;
-constexpr float kWardRadianceClamp = 10.0f;
 
 struct GpuSceneDevice {
     const GpuMaterial *materials;
@@ -119,14 +118,6 @@ __device__ inline float3 clampRadiance3(float3 c) {
     float lum = luminance3(c);
     if (lum > kRadianceClamp) {
         return mul3(c, kRadianceClamp / lum);
-    }
-    return c;
-}
-
-__device__ inline float3 clampWardRadiance3(float3 c) {
-    float lum = luminance3(c);
-    if (lum > kWardRadianceClamp) {
-        return mul3(c, kWardRadianceClamp / lum);
     }
     return c;
 }
@@ -390,7 +381,6 @@ __device__ float3 computeRefractDirection(float3 D, float3 geomN, float ior) {
 struct RefractSplit {
     float3 refractDir;
     float3 reflectDir;
-    float fresnel;
     bool tir;
 };
 
@@ -413,18 +403,9 @@ __device__ RefractSplit computeRefractSplit(float3 D, float3 geomN, float ior) {
     if (k < 0.0f) {
         split.tir = true;
         split.refractDir = split.reflectDir;
-        split.fresnel = 1.0f;
         return split;
     }
     split.refractDir = norm3(add3(mul3(D, eta), mul3(n, eta * cosTheta - sqrtf(k))));
-    float r0 = (etai - etat) / (etai + etat);
-    r0 = r0 * r0;
-    float cosI = -cosTheta;
-    if (etai > etat) {
-        cosI = sqrtf(k);
-    }
-    split.fresnel = r0 + (1.0f - r0) * powf(1.0f - cosI, 5.0f);
-    split.fresnel = fminf(1.0f, fmaxf(0.0f, split.fresnel));
     split.tir = false;
     return split;
 }
@@ -539,176 +520,6 @@ __device__ float pdfGlossy(float3 n, float3 wo, float3 wi, const GpuMaterial &ma
     float vh = fmaxf(0.001f, dot3(wo, h));
     float pdfSpec = specProb * pdfH / (4.0f * vh);
     return pdfDiff + pdfSpec;
-}
-
-__device__ float wardSpecularWeightMax(float3 ks) {
-    return fmaxf(ks.x, fmaxf(ks.y, ks.z));
-}
-
-__device__ float3 wardEnergyConservingDiffuse(float3 kd, float3 ks) {
-    float scale = fmaxf(0.0f, 1.0f - wardSpecularWeightMax(ks));
-    return mul3(kd, scale);
-}
-
-__device__ void wardLobeSamplingWeights(float3 kd, float3 ks, bool &isMetal, float &specProb) {
-    float kdLum = 0.2126f * kd.x + 0.7152f * kd.y + 0.0722f * kd.z;
-    float ksLum = 0.2126f * ks.x + 0.7152f * ks.y + 0.0722f * ks.z;
-    isMetal = kdLum < 0.01f;
-    if (isMetal) {
-        specProb = 1.0f;
-    } else {
-        specProb = ksLum / fmaxf(1e-4f, kdLum + ksLum);
-        specProb = fminf(specProb, 0.55f);
-    }
-}
-__device__ void buildConsistentBasis(float3 n, float3 &X, float3 &Y) {
-    float3 up = make3(0.0f, 1.0f, 0.0f);
-    if (fabsf(dot3(n, up)) > 0.99f) {
-        up = make3(1.0f, 0.0f, 0.0f);
-    }
-    X = norm3(cross3(up, n));
-    Y = norm3(cross3(n, X));
-}
-
-__device__ void buildWardFrame(float3 n, float3 tangentHint, float3 &T, float3 &B) {
-    float3 hint = sub3(tangentHint, mul3(n, dot3(n, tangentHint)));
-    if (len3(hint) < 1e-4f) {
-        buildConsistentBasis(n, T, B);
-        return;
-    }
-    hint = norm3(hint);
-    float3 X0, Y0;
-    buildConsistentBasis(n, X0, Y0);
-    float cosA = dot3(X0, hint);
-    float sinA = dot3(Y0, hint);
-    T = norm3(add3(mul3(X0, cosA), mul3(Y0, sinA)));
-    B = norm3(cross3(n, T));
-}
-
-__device__ float wardExponent(float3 h, float3 n, float3 T, float3 B, float alphaX, float alphaY) {
-    float nh = fmaxf(0.0f, dot3(n, h));
-    if (nh <= 1e-6f) {
-        return 0.0f;
-    }
-    float hx = dot3(T, h);
-    float hy = dot3(B, h);
-    float tan2 = (hx * hx + hy * hy) / (nh * nh);
-    float len2 = hx * hx + hy * hy;
-    float cosPhi = (len2 > 1e-10f) ? hx / sqrtf(len2) : 1.0f;
-    float sinPhi = (len2 > 1e-10f) ? hy / sqrtf(len2) : 0.0f;
-    float denom = cosPhi * cosPhi / (alphaX * alphaX) + sinPhi * sinPhi / (alphaY * alphaY);
-    return expf(-tan2 / fmaxf(1e-10f, denom));
-}
-
-__device__ float wardD(float3 h, float3 n, float3 T, float3 B, float alphaX, float alphaY) {
-    float nh = fmaxf(0.0f, dot3(n, h));
-    if (nh <= 1e-6f) {
-        return 0.0f;
-    }
-    float expTerm = wardExponent(h, n, T, B, alphaX, alphaY);
-    return expTerm / (4.0f * kPi * alphaX * alphaY * nh * nh * nh);
-}
-
-__device__ float3 evalWardSpecular(float3 n, float3 wo, float3 wi, float3 ks, float alphaX, float alphaY,
-                                   float3 T, float3 B) {
-    float nl = dot3(n, wi);
-    float nv = dot3(n, wo);
-    if (nl <= 1e-4f || nv <= 1e-4f) {
-        return make3(0, 0, 0);
-    }
-    float3 h = norm3(add3(wi, wo));
-    float nh = dot3(n, h);
-    if (nh <= 1e-4f) {
-        return make3(0, 0, 0);
-    }
-    float expTerm = wardExponent(h, n, T, B, alphaX, alphaY);
-    float denom = 4.0f * kPi * alphaX * alphaY * nl * nv;
-    return mul3(ks, expTerm / denom);
-}
-
-__device__ float3 evalWard(float3 n, float3 wo, float3 wi, const GpuMaterial &mat) {
-    float nl = dot3(n, wi);
-    float nv = dot3(n, wo);
-    if (nl <= 1e-4f || nv <= 1e-4f) {
-        return make3(0, 0, 0);
-    }
-    float3 kd = load3(mat.diffuse);
-    float3 ks = load3(mat.specular);
-    float3 kdEff = wardEnergyConservingDiffuse(kd, ks);
-    float3 diffuse = mul3(kdEff, 1.0f / kPi);
-    float3 T, B;
-    buildWardFrame(n, load3(mat.tangent), T, B);
-    float3 spec = evalWardSpecular(n, wo, wi, ks, mat.alphaX, mat.alphaY, T, B);
-    return add3(diffuse, spec);
-}
-
-__device__ float3 evalWardNEE(float3 n, float3 wo, float3 wi, const GpuMaterial &mat) {
-    float nl = dot3(n, wi);
-    if (nl <= 1e-4f) {
-        return make3(0, 0, 0);
-    }
-    float3 kd = load3(mat.diffuse);
-    float3 ks = load3(mat.specular);
-    float kdLum = 0.2126f * kd.x + 0.7152f * kd.y + 0.0722f * kd.z;
-    if (kdLum < 0.01f) {
-        // Metal: full Ward BRDF in NEE (MIS + clampWardRadiance suppress fireflies).
-        return evalWard(n, wo, wi, mat);
-    }
-    float3 kdEff = wardEnergyConservingDiffuse(kd, ks);
-    return mul3(kdEff, 1.0f / kPi);
-}
-
-__device__ float pdfWard(float3 n, float3 wo, float3 wi, const GpuMaterial &mat) {
-    float cosO = fmaxf(0.0f, dot3(n, wi));
-    if (cosO <= 0.0f) {
-        return 0.0f;
-    }
-    float3 kd = load3(mat.diffuse);
-    float3 ks = load3(mat.specular);
-    bool isMetal = false;
-    float specProb = 0.0f;
-    wardLobeSamplingWeights(kd, ks, isMetal, specProb);
-    float pdfDiff = (1.0f - specProb) * cosO / kPi;
-    float3 h = norm3(add3(wi, wo));
-    float nh = fmaxf(0.0f, dot3(n, h));
-    if (nh <= 0.0f) {
-        return pdfDiff;
-    }
-    float3 T, B;
-    buildWardFrame(n, load3(mat.tangent), T, B);
-    float D = wardD(h, n, T, B, mat.alphaX, mat.alphaY);
-    float pdfH = D * nh;
-    float vh = fmaxf(0.001f, dot3(wo, h));
-    float pdfSpec = specProb * pdfH / (4.0f * vh);
-    return pdfDiff + pdfSpec;
-}
-
-__device__ float3 sampleWardHalfVector(float3 n, float3 wo, const GpuMaterial &mat, float &pdf,
-                                       curandState &rng) {
-    float3 T, B;
-    buildWardFrame(n, load3(mat.tangent), T, B);
-
-    float u1 = gpuUniform(rng);
-    float u2 = gpuUniform(rng);
-    float phiH = atan2f(mat.alphaY * sinf(2.0f * kPi * u1),
-                        mat.alphaX * cosf(2.0f * kPi * u1));
-    float cosPhi = cosf(phiH);
-    float sinPhi = sinf(phiH);
-    float logTerm = -logf(fmaxf(1e-6f, 1.0f - u2));
-    float tanTheta2 = logTerm / (cosPhi * cosPhi / (mat.alphaX * mat.alphaX) +
-                                 sinPhi * sinPhi / (mat.alphaY * mat.alphaY));
-    float cosTheta = 1.0f / sqrtf(1.0f + tanTheta2);
-    float sinTheta = sqrtf(fmaxf(0.0f, 1.0f - cosTheta * cosTheta));
-
-    float3 h = norm3(add3(add3(mul3(T, sinTheta * cosPhi), mul3(B, sinTheta * sinPhi)),
-                          mul3(n, cosTheta)));
-    if (dot3(h, wo) < 0.0f) {
-        h = mul3(h, -1.0f);
-    }
-    float nh = fmaxf(0.0f, dot3(n, h));
-    float D = wardD(h, n, T, B, mat.alphaX, mat.alphaY);
-    pdf = D * nh;
-    return h;
 }
 
 __device__ float pdfAreaLightDir(const GpuAreaLight &area, float3 hitPoint, float3 wi) {
@@ -1086,12 +897,11 @@ __device__ bool sampleAreaLightGlossy(const GpuSceneDevice &scene, const GpuArea
         return false;
     }
     float lightArea = triangleArea(load3(area.v0), load3(area.v1), load3(area.v2));
-    float3 brdf = (mat.type == GPU_MAT_WARD) ? evalWardNEE(N, wo, wi, mat)
-                                             : evalGlossy(N, wo, wi, mat);
+    float3 brdf = evalGlossy(N, wo, wi, mat);
     float3 emission = load3(area.color);
     if (useMis) {
         float pdfLight = dist2 / (lightArea * cosL);
-        float pdfBrdf = (mat.type == GPU_MAT_WARD) ? pdfWard(N, wo, wi, mat) : pdfGlossy(N, wo, wi, mat);
+        float pdfBrdf = pdfGlossy(N, wo, wi, mat);
         float misW = misWeightPower(pdfLight, pdfLight, pdfBrdf);
         if (misW < 1e-8f) {
             return false;
@@ -1255,7 +1065,7 @@ __device__ float3 sampleDirectPointLightsGlossy(const GpuSceneDevice &scene, flo
             continue;
         }
         float cosTheta = dot3(N, L);
-        float3 brdf = (mat.type == GPU_MAT_WARD) ? evalWardNEE(N, wo, L, mat) : evalGlossy(N, wo, L, mat);
+        float3 brdf = evalGlossy(N, wo, L, mat);
         direct = add3(direct, mul3(mul3v(brdf, load3(pl.color)), cosTheta / dist2));
     }
     return direct;
@@ -1338,7 +1148,6 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
 
     if (mat.type == GPU_MAT_REFRACT) {
         float3 refractColor = load3(mat.specular);
-        bool useFresnel = mat.fresnelEnabled != 0;
         bool exiting = dot3(D, geomN) > 0.0f;
         float3 Nface = faceNormal(D, geomN);
         auto applyRefractAtten = [&](float3 tp) {
@@ -1364,35 +1173,9 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
                     } else {
                         bz = child.z;
                     }
-                } else if (!useFresnel) {
-                    float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
-                    float3 child = castRayPath(scene, refrOrigin, split.refractDir, depth + 1, throughput, true,
-                                               mode, dispersionEnabled, c, nullptr, guideGrid, trainingPass,
-                                               kRefractRayTMin, rng);
-                    if (c == 0) {
-                        rx = child.x;
-                    } else if (c == 1) {
-                        gy = child.y;
-                    } else {
-                        bz = child.z;
-                    }
-                } else if (gpuUniform(rng) < split.fresnel) {
-                    float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
-                    float3 newTp = mul3(throughput, 1.0f / fmaxf(1e-8f, split.fresnel));
-                    float3 child = castRayPath(scene, reflOrigin, split.reflectDir, depth + 1, newTp, true,
-                                               mode, dispersionEnabled, c, nullptr, guideGrid, trainingPass,
-                                               kRayEps, rng);
-                    if (c == 0) {
-                        rx = child.x;
-                    } else if (c == 1) {
-                        gy = child.y;
-                    } else {
-                        bz = child.z;
-                    }
                 } else {
                     float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
-                    float3 newTp = mul3(throughput, 1.0f / fmaxf(1e-8f, 1.0f - split.fresnel));
-                    float3 child = castRayPath(scene, refrOrigin, split.refractDir, depth + 1, newTp, true,
+                    float3 child = castRayPath(scene, refrOrigin, split.refractDir, depth + 1, throughput, true,
                                                mode, dispersionEnabled, c, nullptr, guideGrid, trainingPass,
                                                kRefractRayTMin, rng);
                     if (c == 0) {
@@ -1417,26 +1200,11 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
                                               mode, dispersionEnabled, dispChannel, nullptr, guideGrid,
                                               trainingPass, kRayEps, rng));
         }
-        if (!useFresnel) {
-            float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
-            float3 newTp = applyRefractAtten(throughput);
-            return clampRadiance3(castRayPath(scene, refrOrigin, split.refractDir, depth + 1, newTp, true,
-                                              mode, dispersionEnabled, dispChannel, nullptr, guideGrid,
-                                              trainingPass, kRefractRayTMin, rng));
-        }
-        if (gpuUniform(rng) < split.fresnel) {
-            float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
-            float3 newTp = mul3(throughput, 1.0f / fmaxf(1e-8f, split.fresnel));
-            return clampRadiance3(castRayPath(scene, reflOrigin, split.reflectDir, depth + 1, newTp, true, mode,
-                                              dispersionEnabled, dispChannel, nullptr, guideGrid, trainingPass,
-                                              kRayEps, rng));
-        }
         float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
-        float3 newTp = mul3(applyRefractAtten(throughput),
-                            1.0f / fmaxf(1e-8f, 1.0f - split.fresnel));
-        return clampRadiance3(castRayPath(scene, refrOrigin, split.refractDir, depth + 1, newTp, true, mode,
-                                          dispersionEnabled, dispChannel, nullptr, guideGrid, trainingPass,
-                                          kRefractRayTMin, rng));
+        float3 newTp = applyRefractAtten(throughput);
+        return clampRadiance3(castRayPath(scene, refrOrigin, split.refractDir, depth + 1, newTp, true,
+                                          mode, dispersionEnabled, dispChannel, nullptr, guideGrid,
+                                          trainingPass, kRefractRayTMin, rng));
     }
 
     if (mat.type == GPU_MAT_GLOSSY) {
@@ -1547,74 +1315,6 @@ __device__ float3 castRayPath(const GpuSceneDevice &scene, float3 orig, float3 d
             }
         }
         return clampRadiance3(add3(mul3v(direct, throughput), indirect));
-    }
-
-    if (mat.type == GPU_MAT_WARD) {
-        float3 wo = mul3(D, -1.0f);
-        float3 N = shadingNormal(wo, geomN);
-        float3 kd = load3(mat.diffuse);
-        float3 ks = load3(mat.specular);
-        float3 kdEff = wardEnergyConservingDiffuse(kd, ks);
-        float3 direct = make3(0, 0, 0);
-        float3 indirect = make3(0, 0, 0);
-        if (useNee) {
-            direct = sampleDirectEmissiveBRDF(scene, hitPoint, N, wo, mat, useMis || useNee, rng);
-            direct = add3(direct, sampleDirectPointLightsGlossy(scene, hitPoint, N, wo, mat));
-        }
-
-        bool isMetal = false;
-        float specProb = 0.0f;
-        wardLobeSamplingWeights(kd, ks, isMetal, specProb);
-        float3 wi;
-        float pdf = 0.0f;
-        float3 brdf = make3(0, 0, 0);
-        bool specularLobe = isMetal || gpuUniform(rng) < specProb;
-        if (specularLobe) {
-            float pdfH = 0.0f;
-            float3 h = sampleWardHalfVector(N, wo, mat, pdfH, rng);
-            wi = norm3(sub3(mul3(h, 2.0f * dot3(wo, h)), wo));
-            if (dot3(N, wi) <= 0.0f) {
-                return clampWardRadiance3(mul3v(direct, throughput));
-            }
-            float3 T, B;
-            buildWardFrame(N, load3(mat.tangent), T, B);
-            brdf = evalWardSpecular(N, wo, wi, ks, mat.alphaX, mat.alphaY, T, B);
-            pdf = pdfWard(N, wo, wi, mat);
-        } else {
-            wi = sampleCosineHemisphere(N, pdf, rng);
-            brdf = mul3(kdEff, 1.0f / kPi);
-            pdf = pdfWard(N, wo, wi, mat);
-        }
-
-        if (pdf >= 1e-8f) {
-            float rrProb = 1.0f;
-            bool traceIndirect = true;
-            if (depth >= kRrStartDepth) {
-                rrProb = survivalProb(mul3v(throughput, add3(kdEff, ks)));
-                traceIndirect = gpuUniform(rng) <= rrProb;
-            }
-            if (traceIndirect) {
-                float cosO = fmaxf(0.0f, dot3(N, wi));
-                float3 origin = offsetAlongNormal(hitPoint, N, kOriginOffset);
-                bool indirectEmissive = !useNee || useMis;
-                MisCtx mis;
-                const MisCtx *misPtr = nullptr;
-                if (useMis) {
-                    mis.pdfBrdf = pdf;
-                    mis.wi = wi;
-                    mis.shadingPoint = hitPoint;
-                    mis.N = N;
-                    mis.active = true;
-                    mis.glossyPath = true;
-                    misPtr = &mis;
-                }
-                float3 Li = castRayPath(scene, origin, wi, depth + 1, throughput, indirectEmissive,
-                                        mode, dispersionEnabled, dispChannel, misPtr, guideGrid,
-                                        trainingPass, kRayEps, rng);
-                indirect = clampWardRadiance3(mul3(mul3v(brdf, Li), cosO / (pdf * rrProb)));
-            }
-        }
-        return clampWardRadiance3(add3(mul3v(direct, throughput), indirect));
     }
 
     float3 N = shadingNormal(mul3(D, -1.0f), geomN);
@@ -1789,7 +1489,7 @@ __device__ float3 castRayWhitted(const GpuSceneDevice &scene, float3 orig, float
         return make3(0, 0, 0);
     }
 
-    if (mat.type == GPU_MAT_DIFFUSE || mat.type == GPU_MAT_GLOSSY || mat.type == GPU_MAT_WARD) {
+    if (mat.type == GPU_MAT_DIFFUSE || mat.type == GPU_MAT_GLOSSY) {
         return shadeWhittedLights(scene, hitPoint, geomN, D, mat);
     }
 
@@ -1802,7 +1502,6 @@ __device__ float3 castRayWhitted(const GpuSceneDevice &scene, float3 orig, float
     }
 
     float3 refractColor = load3(mat.specular);
-    bool useFresnel = mat.fresnelEnabled != 0;
     bool exiting = dot3(D, geomN) > 0.0f;
     float3 Nface = faceNormal(D, geomN);
     if (dispersionEnabled && mat.dispersionDelta > 0.0f && exiting) {
@@ -1823,7 +1522,7 @@ __device__ float3 castRayWhitted(const GpuSceneDevice &scene, float3 orig, float
                 } else {
                     bz = child.z;
                 }
-            } else if (!useFresnel) {
+            } else {
                 float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
                 float3 child = castRayWhitted(scene, refrOrigin, split.refractDir, depth + 1, kRefractRayTMin,
                                               dispersionEnabled, rng);
@@ -1833,20 +1532,6 @@ __device__ float3 castRayWhitted(const GpuSceneDevice &scene, float3 orig, float
                     gy = child.y;
                 } else {
                     bz = child.z;
-                }
-            } else {
-                float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
-                float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
-                float3 reflChild = castRayWhitted(scene, reflOrigin, split.reflectDir, depth + 1, kRayEps,
-                                                  dispersionEnabled, rng);
-                float3 refrChild = castRayWhitted(scene, refrOrigin, split.refractDir, depth + 1, kRefractRayTMin,
-                                                  dispersionEnabled, rng);
-                if (c == 0) {
-                    rx = split.fresnel * reflChild.x + (1.0f - split.fresnel) * refrChild.x;
-                } else if (c == 1) {
-                    gy = split.fresnel * reflChild.y + (1.0f - split.fresnel) * refrChild.y;
-                } else {
-                    bz = split.fresnel * reflChild.z + (1.0f - split.fresnel) * refrChild.z;
                 }
             }
         }
@@ -1860,20 +1545,10 @@ __device__ float3 castRayWhitted(const GpuSceneDevice &scene, float3 orig, float
                                       dispersionEnabled, rng);
         return child;
     }
-    if (!useFresnel) {
-        float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
-        float3 child = castRayWhitted(scene, refrOrigin, split.refractDir, depth + 1, kRefractRayTMin,
-                                      dispersionEnabled, rng);
-        return exiting ? child : mul3v(child, refractColor);
-    }
-    float3 reflOrigin = offsetAlongNormal(hitPoint, Nface, kOriginOffset);
     float3 refrOrigin = offsetAlongRay(hitPoint, split.refractDir, kRefractOriginOffset);
-    float3 reflChild = castRayWhitted(scene, reflOrigin, split.reflectDir, depth + 1, kRayEps,
-                                      dispersionEnabled, rng);
-    float3 refrChild = castRayWhitted(scene, refrOrigin, split.refractDir, depth + 1, kRefractRayTMin,
-                                      dispersionEnabled, rng);
-    float3 tintedRefr = exiting ? refrChild : mul3v(refrChild, refractColor);
-    return add3(mul3(reflChild, split.fresnel), mul3(tintedRefr, 1.0f - split.fresnel));
+    float3 child = castRayWhitted(scene, refrOrigin, split.refractDir, depth + 1, kRefractRayTMin,
+                                  dispersionEnabled, rng);
+    return exiting ? child : mul3v(child, refractColor);
 }
 
 __device__ float3 generateCameraRay(const GpuCamera &cam, float px, float py) {

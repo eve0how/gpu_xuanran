@@ -8,8 +8,7 @@ enum GpuMatType : int {
     GPU_MAT_REFLECT = 1,
     GPU_MAT_REFRACT = 2,
     GPU_MAT_EMISSIVE = 3,
-    GPU_MAT_GLOSSY = 4,
-    GPU_MAT_WARD = 5
+    GPU_MAT_GLOSSY = 4
 };
 
 enum GpuRenderMode : int {
@@ -51,10 +50,6 @@ struct GpuMaterial {
     float f0[3];
     float dispersionDelta;
     float shininess;
-    int fresnelEnabled;
-    float alphaX;
-    float alphaY;
-    float tangent[3];
 };
 
 struct GpuSphere {

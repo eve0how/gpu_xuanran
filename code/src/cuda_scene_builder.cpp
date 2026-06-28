@@ -153,12 +153,6 @@ private:
             g.f0[0] = g.f0[1] = g.f0[2] = 0.04f;
             g.dispersionDelta = 0.0f;
             g.shininess = 0.0f;
-            g.fresnelEnabled = 1;
-            g.alphaX = 0.2f;
-            g.alphaY = 0.2f;
-            g.tangent[0] = 1.0f;
-            g.tangent[1] = 0.0f;
-            g.tangent[2] = 0.0f;
             toGpuVec3(mat->getSpecularColor(), g.specular);
             g.shininess = mat->getShininess();
 
@@ -173,7 +167,6 @@ private:
                     toGpuVec3(rm->getRefractColor(), g.specular);
                     g.ior = rm->getRefractIndex();
                     g.dispersionDelta = rm->getDispersionDelta();
-                    g.fresnelEnabled = rm->isFresnelEnabled() ? 1 : 0;
                     break;
                 }
                 case MaterialType::EMISSIVE:
@@ -184,14 +177,6 @@ private:
                     toGpuVec3(gm->getSpecularColor(), g.specular);
                     g.roughness = gm->getRoughness();
                     toGpuVec3(gm->getF0(), g.f0);
-                    break;
-                }
-                case MaterialType::WARD: {
-                    auto *wm = static_cast<WardMaterial *>(mat);
-                    toGpuVec3(wm->getSpecularColor(), g.specular);
-                    g.alphaX = wm->getAlphaX();
-                    g.alphaY = wm->getAlphaY();
-                    toGpuVec3(wm->getTangentDirection(), g.tangent);
                     break;
                 }
                 default:

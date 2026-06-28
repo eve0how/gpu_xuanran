@@ -1,15 +1,16 @@
-scene_whitted_path_compare.txt — §2.6 Whitted vs Path (point light)
-=====================================================================
+scene_whitted_path_compare.txt — §2.6 Whitted vs path_nee (point light)
+========================================================================
 Cornell Box + five spheres + refractive glass cube; same geometry as
 scene_whitted.txt (no emissive ceiling, no AreaLights).
 
 Lighting
 --------
   Single PointLight at (0, 1.9, 0), color (2, 2, 2).
+  BOTH Whitted and path_nee use this SAME point light (not point vs area).
 
-Used for fair Whitted vs path-tracing comparison: Whitted Phong direct
-light is designed for delta/point sources. Area-light + NEE demos use
-scene_path.txt (§2.7).
+Used for fair Whitted vs path_nee comparison: Whitted Phong direct light
+and path_nee point-light NEE both connect to the same delta source.
+Area-light + NEE variance demos use scene_path.txt (§2.7).
 
 Renders (1024², gamma, CPU omp)
 -------------------------------
@@ -17,6 +18,6 @@ Renders (1024², gamma, CPU omp)
     ./build/PA1-2 testcases/scene_whitted_path_compare.txt \
       output/report/whitted_path_compare/whitted.bmp whitted 1 gamma omp
 
-  path (no NEE), 64 SPP:
+  path_nee 128:
     ./build/PA1-2 testcases/scene_whitted_path_compare.txt \
-      output/report/whitted_path_compare/path.bmp path 64 gamma omp
+      output/report/whitted_path_compare/path_nee.bmp path_nee 128 gamma omp

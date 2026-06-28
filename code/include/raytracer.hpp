@@ -22,7 +22,6 @@ constexpr int RR_START_DEPTH = 8;
 constexpr float RR_MIN_SURVIVAL = 0.15f;
 constexpr float M_PI_F = 3.14159265358979323846f;
 constexpr float PATH_RADIANCE_CLAMP = 100.0f;
-constexpr float PATH_WARD_RADIANCE_CLAMP = 10.0f;
 
 enum class RenderMode {
     WHITTED,
@@ -39,7 +38,6 @@ struct MisIndirectCtx {
     Vector3f N;
     Vector3f wo;
     GlossyMaterial *glossyMat = nullptr;
-    WardMaterial *wardMat = nullptr;
 };
 
 namespace {
@@ -110,7 +108,7 @@ private:
         return mode == RenderMode::PATH_TRACE_NEE || useMIS();
     }
 
-    // Glossy/Ward area-light NEE uses power-heuristic MIS in path_nee as well: full BRDF
+    // Glossy area-light NEE uses power-heuristic MIS in path_nee as well: full BRDF
     // without MIS blows up at grazing view (small cos theta_r) toward bright emitters.
     bool useGlossyNEEMIS() const {
         return useNEE();
@@ -131,14 +129,6 @@ private:
         float lum = luminance(c);
         if (lum > PATH_RADIANCE_CLAMP) {
             return c * (PATH_RADIANCE_CLAMP / lum);
-        }
-        return c;
-    }
-
-    static Vector3f clampWardRadiance(const Vector3f &c) {
-        float lum = luminance(c);
-        if (lum > PATH_WARD_RADIANCE_CLAMP) {
-            return c * (PATH_WARD_RADIANCE_CLAMP / lum);
         }
         return c;
     }
@@ -189,7 +179,6 @@ private:
     struct RefractSplit {
         Vector3f refractDir;
         Vector3f reflectDir;
-        float fresnel = 0.0f;
         bool tir = false;
     };
 
@@ -212,19 +201,10 @@ private:
         if (k < 0.0f) {
             split.tir = true;
             split.refractDir = split.reflectDir;
-            split.fresnel = 1.0f;
             return split;
         }
         split.refractDir =
             (eta * D + (eta * cosTheta - sqrtf(k)) * n).normalized();
-        float r0 = (etai - etat) / (etai + etat);
-        r0 = r0 * r0;
-        float cosI = -cosTheta;
-        if (etai > etat) {
-            cosI = sqrtf(k);
-        }
-        split.fresnel = r0 + (1.0f - r0) * powf(1.0f - cosI, 5.0f);
-        split.fresnel = std::min(1.0f, std::max(0.0f, split.fresnel));
         return split;
     }
 
@@ -385,47 +365,6 @@ private:
                         GlossyMaterial *mat) const {
         return pdfGlossyBRDF(n, wo, wi, mat->getDiffuseColor(), mat->getSpecularColor(),
                              mat->getRoughness());
-    }
-
-    Vector3f sampleWardHalfVector(const Vector3f &n, const Vector3f &wo,
-                                    float alphaX, float alphaY,
-                                    const Vector3f &T, const Vector3f &B, float &pdf) const {
-        float u1 = uniform();
-        float u2 = uniform();
-        return WardBRDF::sampleHalfVector(n, wo, alphaX, alphaY, T, B, u1, u2, pdf);
-    }
-
-    float pdfWardBRDF(const Vector3f &n, const Vector3f &wo, const Vector3f &wi,
-                      const Vector3f &kd, const Vector3f &ks, float alphaX, float alphaY,
-                      const Vector3f &T, const Vector3f &B) const {
-        float cosO = std::max(0.0f, Vector3f::dot(n, wi));
-        if (cosO <= 0.0f) {
-            return 0.0f;
-        }
-        bool isMetal = false;
-        float specProb = 0.0f;
-        WardBRDF::lobeSamplingWeights(kd, ks, isMetal, specProb);
-
-        float pdfDiff = (1.0f - specProb) * cosO / M_PI_F;
-
-        Vector3f h = (wi + wo).normalized();
-        float nh = std::max(0.0f, Vector3f::dot(n, h));
-        if (nh <= 0.0f) {
-            return pdfDiff;
-        }
-        float D = WardBRDF::wardD(h, n, T, B, alphaX, alphaY);
-        float pdfH = D * nh;
-        float vh = std::max(0.001f, Vector3f::dot(wo, h));
-        float pdfSpec = specProb * pdfH / (4.0f * vh);
-        return pdfDiff + pdfSpec;
-    }
-
-    float pdfWardBRDF(const Vector3f &n, const Vector3f &wo, const Vector3f &wi,
-                      WardMaterial *mat) const {
-        Vector3f T, B;
-        mat->buildShadingFrame(n, T, B);
-        return pdfWardBRDF(n, wo, wi, mat->getDiffuseColor(), mat->getSpecularColor(),
-                           mat->getAlphaX(), mat->getAlphaY(), T, B);
     }
 
     float pdfAreaLightDirection(const AreaLight *area, const Vector3f &hitPoint,
@@ -606,61 +545,6 @@ private:
         return true;
     }
 
-    Vector3f evaluateWardNEEBRDF(WardMaterial *mat, const Vector3f &N, const Vector3f &wo,
-                                  const Vector3f &wi) const {
-        Vector3f kd = mat->getDiffuseColor();
-        float kdLum = 0.2126f * kd[0] + 0.7152f * kd[1] + 0.0722f * kd[2];
-        if (kdLum < 0.01f) {
-            return mat->evaluateBRDF(N, wo, wi);
-        }
-        return mat->evaluateDiffuse(N, wi);
-    }
-
-    bool sampleOneAreaLightWard(const AreaLight *area, const Vector3f &hitPoint, const Vector3f &N,
-                                const Vector3f &wo, WardMaterial *mat, Vector3f &contrib) const {
-        const Vector3f &v0 = area->getVertex0();
-        const Vector3f &v1 = area->getVertex1();
-        const Vector3f &v2 = area->getVertex2();
-        Vector3f lightPoint = sampleTriangle(v0, v1, v2);
-        Vector3f wi = lightPoint - hitPoint;
-        float dist2 = wi.squaredLength();
-        float dist = sqrtf(dist2);
-        if (dist < RAY_EPSILON) {
-            return false;
-        }
-        wi = wi / dist;
-
-        float cosO = Vector3f::dot(N, wi);
-        if (cosO <= 0.0f) {
-            return false;
-        }
-
-        Vector3f lightN = Vector3f::cross(v1 - v0, v2 - v0).normalized();
-        float cosL = Vector3f::dot(lightN, -wi);
-        if (cosL <= 0.0f) {
-            return false;
-        }
-
-        if (isSegmentOccluded(hitPoint, lightPoint, N)) {
-            return false;
-        }
-
-        float lightArea = triangleArea(v0, v1, v2);
-        Vector3f brdf = evaluateWardNEEBRDF(mat, N, wo, wi);
-        if (useGlossyNEEMIS()) {
-            float pdfLight = dist2 / (lightArea * cosL);
-            float pdfBrdf = pdfWardBRDF(N, wo, wi, mat);
-            float misW = misWeightPower(pdfLight, pdfLight, pdfBrdf);
-            if (misW < 1e-8f) {
-                return false;
-            }
-            contrib += brdf * area->getColor() * cosO / pdfLight * misW;
-        } else {
-            contrib += brdf * area->getColor() * cosO * cosL * lightArea / dist2;
-        }
-        return true;
-    }
-
     Vector3f sampleDirectEmissive(const Vector3f &hitPoint, const Vector3f &N,
                                   const Vector3f &albedo) const {
         Vector3f direct = Vector3f::ZERO;
@@ -743,47 +627,6 @@ private:
         return direct;
     }
 
-    Vector3f sampleDirectPointLightsWard(const Vector3f &hitPoint, const Vector3f &N,
-                                       const Vector3f &wo, WardMaterial *mat) const {
-        Vector3f direct = Vector3f::ZERO;
-        for (int i = 0; i < scene.getNumLights(); ++i) {
-            auto *point = dynamic_cast<PointLight *>(scene.getLight(i));
-            if (point == nullptr) {
-                continue;
-            }
-            Vector3f toLight = point->getPosition() - hitPoint;
-            float dist2 = toLight.squaredLength();
-            if (dist2 < RAY_EPSILON * RAY_EPSILON) {
-                continue;
-            }
-            Vector3f wi = toLight / sqrtf(dist2);
-            Vector3f lightColor;
-            Vector3f dummy;
-            scene.getLight(i)->getIllumination(hitPoint, dummy, lightColor);
-            if (Vector3f::dot(N, wi) <= 0.0f) {
-                continue;
-            }
-            if (isInShadow(hitPoint, N, scene.getLight(i))) {
-                continue;
-            }
-            Vector3f brdf = evaluateWardNEEBRDF(mat, N, wo, wi);
-            direct += brdf * lightColor * Vector3f::dot(N, wi) / dist2;
-        }
-        return direct;
-    }
-
-    Vector3f sampleDirectEmissiveWard(const Vector3f &hitPoint, const Vector3f &N,
-                                      const Vector3f &wo, WardMaterial *mat) const {
-        Vector3f direct = Vector3f::ZERO;
-        for (int i = 0; i < scene.getNumLights(); ++i) {
-            auto *area = dynamic_cast<AreaLight *>(scene.getLight(i));
-            if (area != nullptr) {
-                sampleOneAreaLightWard(area, hitPoint, N, wo, mat, direct);
-            }
-        }
-        return direct;
-    }
-
     float survivalProbability(const Vector3f &throughput) const {
         return std::max(RR_MIN_SURVIVAL, luminance(throughput));
     }
@@ -836,7 +679,6 @@ private:
         const Vector3f &refractColor = mat->getRefractColor();
         float baseIor = mat->getRefractIndex();
         float delta = mat->getDispersionDelta();
-        bool useFresnel = mat->isFresnelEnabled();
 
         // Split white light into R/G/B only when exiting glass (air-boundary).
         // Entry uses a single IOR so the prism stays clear; separation projects on the screen.
@@ -851,23 +693,11 @@ private:
                     Vector3f reflChild = castRayPath(Ray(origin, split.reflectDir), depth + 1, throughput, true,
                                                      nullptr, c, RAY_EPSILON);
                     result[c] = reflChild[c];
-                } else if (!useFresnel) {
+                } else {
                     Vector3f origin = offsetAlongRay(hitPoint, split.refractDir, REFRACT_ORIGIN_OFFSET);
                     Vector3f refrChild = castRayPath(Ray(origin, split.refractDir), depth + 1, throughput, true,
                                                      nullptr, c, REFRACT_RAY_TMIN);
                     result[c] = refrChild[c];
-                } else if (uniform() < split.fresnel) {
-                    Vector3f origin = offsetAlongNormal(hitPoint, faceNormal(D, geomN), ORIGIN_OFFSET);
-                    Vector3f newTp = throughput / std::max(1e-8f, split.fresnel);
-                    Vector3f child = castRayPath(Ray(origin, split.reflectDir), depth + 1, newTp, true, nullptr, c,
-                                                 RAY_EPSILON);
-                    result[c] = child[c];
-                } else {
-                    Vector3f origin = offsetAlongRay(hitPoint, split.refractDir, REFRACT_ORIGIN_OFFSET);
-                    Vector3f newTp = throughput / std::max(1e-8f, 1.0f - split.fresnel);
-                    Vector3f child = castRayPath(Ray(origin, split.refractDir), depth + 1, newTp, true, nullptr, c,
-                                                 REFRACT_RAY_TMIN);
-                    result[c] = child[c];
                 }
             }
             return clampRadiance(result);
@@ -881,14 +711,7 @@ private:
         if (split.tir) {
             return traceDielectricReflect(ray, hit, mat, depth, throughput, dispChannel);
         }
-        if (!useFresnel) {
-            return traceDielectricRefract(ray, hit, mat, depth, throughput, dispChannel, ior);
-        }
-        if (uniform() < split.fresnel) {
-            return traceDielectricReflect(ray, hit, mat, depth, throughput, dispChannel, split.fresnel);
-        }
-        return traceDielectricRefract(ray, hit, mat, depth, throughput, dispChannel, ior,
-                                      1.0f - split.fresnel);
+        return traceDielectricRefract(ray, hit, mat, depth, throughput, dispChannel, ior);
     }
 
     Vector3f castRayWhitted(const Ray &ray, int depth, float tmin) const {
@@ -918,10 +741,6 @@ private:
             return shadeGlossyWhitted(ray, hit, hitPoint);
         }
 
-        if (mat->getType() == MaterialType::WARD) {
-            return shadeWardWhitted(ray, hit, hitPoint);
-        }
-
         if (mat->getType() == MaterialType::DIFFUSE) {
             return shadeDiffuse(ray, hit, hitPoint);
         }
@@ -939,7 +758,6 @@ private:
         float baseIor = refractMat->getRefractIndex();
         float delta = refractMat->getDispersionDelta();
         const Vector3f &refractColor = refractMat->getRefractColor();
-        bool useFresnel = refractMat->isFresnelEnabled();
 
         bool exiting = Vector3f::dot(D, geomN) > 0.0f;
         if (dispersionEnabled && delta > 0.0f && exiting) {
@@ -951,16 +769,10 @@ private:
                     Vector3f reflOrigin = offsetAlongNormal(hitPoint, faceNormal(D, geomN), ORIGIN_OFFSET);
                     Vector3f child = castRayWhitted(Ray(reflOrigin, split.reflectDir), depth + 1, RAY_EPSILON);
                     result[c] = child[c];
-                } else if (!useFresnel) {
+                } else {
                     Vector3f refrOrigin = offsetAlongRay(hitPoint, split.refractDir, REFRACT_ORIGIN_OFFSET);
                     Vector3f child = castRayWhitted(Ray(refrOrigin, split.refractDir), depth + 1, REFRACT_RAY_TMIN);
                     result[c] = child[c];
-                } else {
-                    Vector3f reflOrigin = offsetAlongNormal(hitPoint, faceNormal(D, geomN), ORIGIN_OFFSET);
-                    Vector3f refrOrigin = offsetAlongRay(hitPoint, split.refractDir, REFRACT_ORIGIN_OFFSET);
-                    Vector3f reflChild = castRayWhitted(Ray(reflOrigin, split.reflectDir), depth + 1, RAY_EPSILON);
-                    Vector3f refrChild = castRayWhitted(Ray(refrOrigin, split.refractDir), depth + 1, REFRACT_RAY_TMIN);
-                    result[c] = split.fresnel * reflChild[c] + (1.0f - split.fresnel) * refrChild[c];
                 }
             }
             return result;
@@ -972,17 +784,9 @@ private:
             Vector3f child = castRayWhitted(Ray(reflOrigin, split.reflectDir), depth + 1, RAY_EPSILON);
             return child;
         }
-        if (!useFresnel) {
-            Vector3f refrOrigin = offsetAlongRay(hitPoint, split.refractDir, REFRACT_ORIGIN_OFFSET);
-            Vector3f child = castRayWhitted(Ray(refrOrigin, split.refractDir), depth + 1, REFRACT_RAY_TMIN);
-            return exiting ? child : refractColor * child;
-        }
-        Vector3f reflOrigin = offsetAlongNormal(hitPoint, faceNormal(D, geomN), ORIGIN_OFFSET);
         Vector3f refrOrigin = offsetAlongRay(hitPoint, split.refractDir, REFRACT_ORIGIN_OFFSET);
-        Vector3f reflChild = castRayWhitted(Ray(reflOrigin, split.reflectDir), depth + 1, RAY_EPSILON);
-        Vector3f refrChild = castRayWhitted(Ray(refrOrigin, split.refractDir), depth + 1, REFRACT_RAY_TMIN);
-        Vector3f tintedRefr = exiting ? refrChild : refractColor * refrChild;
-        return split.fresnel * reflChild + (1.0f - split.fresnel) * tintedRefr;
+        Vector3f child = castRayWhitted(Ray(refrOrigin, split.refractDir), depth + 1, REFRACT_RAY_TMIN);
+        return exiting ? child : refractColor * child;
     }
 
     // path tracing
@@ -1043,11 +847,6 @@ private:
         if (mat->getType() == MaterialType::GLOSSY) {
             return shadeGlossyPath(hit, hitPoint, D, geomN, static_cast<GlossyMaterial *>(mat), depth,
                                    throughput, dispChannel);
-        }
-
-        if (mat->getType() == MaterialType::WARD) {
-            return shadeWardPath(hit, hitPoint, D, geomN, static_cast<WardMaterial *>(mat), depth,
-                                 throughput, dispChannel);
         }
 
         return shadeDiffusePath(hit, hitPoint, D, geomN, mat, depth, throughput, dispChannel);
@@ -1174,81 +973,6 @@ private:
         return clampRadiance(throughput * direct + indirect);
     }
 
-    Vector3f shadeWardPath(const Hit &hit, const Vector3f &hitPoint, const Vector3f &D,
-                           const Vector3f &geomN, WardMaterial *mat, int depth,
-                           const Vector3f &throughput, int dispChannel) const {
-        Vector3f wo = -D;
-        Vector3f N = mat->getShadingNormal(hit, wo);
-        Vector3f kd = mat->getShadedDiffuse(hit);
-        Vector3f kdEff = mat->getEnergyConservingDiffuse(kd);
-        Vector3f ks = mat->getSpecularColor();
-        float alphaX = mat->getAlphaX();
-        float alphaY = mat->getAlphaY();
-        Vector3f T, B;
-        mat->buildShadingFrame(N, T, B);
-
-        Vector3f direct = Vector3f::ZERO;
-        if (useNEE()) {
-            direct = sampleDirectEmissiveWard(hitPoint, N, wo, mat) +
-                     sampleDirectPointLightsWard(hitPoint, N, wo, mat);
-        }
-
-        bool isMetal = false;
-        float specProb = 0.0f;
-        WardBRDF::lobeSamplingWeights(kd, ks, isMetal, specProb);
-
-        Vector3f wi;
-        float pdf = 0.0f;
-        Vector3f brdf = Vector3f::ZERO;
-        bool specularLobe = isMetal || uniform() < specProb;
-        if (specularLobe) {
-            float pdfH = 0.0f;
-            Vector3f h = sampleWardHalfVector(N, wo, alphaX, alphaY, T, B, pdfH);
-            wi = (2.0f * Vector3f::dot(wo, h) * h - wo).normalized();
-            if (Vector3f::dot(N, wi) <= 0.0f) {
-                return clampWardRadiance(throughput * direct);
-            }
-            brdf = mat->evaluateSpecular(N, wo, wi);
-            pdf = pdfWardBRDF(N, wo, wi, mat);
-        } else {
-            float pdfDummy = 0.0f;
-            wi = sampleCosineHemisphere(N, pdfDummy);
-            brdf = mat->evaluateDiffuse(N, wi, kd);
-            pdf = pdfWardBRDF(N, wo, wi, mat);
-        }
-
-        Vector3f indirect = Vector3f::ZERO;
-        if (pdf >= 1e-8f) {
-            float rrProb = 1.0f;
-            bool traceIndirect = true;
-            if (depth >= RR_START_DEPTH) {
-                rrProb = survivalProbability(throughput * (kdEff + ks));
-                traceIndirect = uniform() <= rrProb;
-            }
-            if (traceIndirect) {
-                float cosO = std::max(0.0f, Vector3f::dot(N, wi));
-                Vector3f origin = offsetAlongNormal(hitPoint, N, ORIGIN_OFFSET);
-                MisIndirectCtx misCtx;
-                const MisIndirectCtx *misPtr = nullptr;
-                if (useMIS()) {
-                    misCtx.pdfBrdf = pdf;
-                    misCtx.wi = wi;
-                    misCtx.shadingPoint = hitPoint;
-                    misCtx.N = N;
-                    misCtx.wo = wo;
-                    misCtx.wardMat = mat;
-                    misPtr = &misCtx;
-                }
-                bool indirectEmissive = !useNEE() || useMIS();
-                Vector3f Li = castRayPath(Ray(origin, wi), depth + 1, throughput, indirectEmissive,
-                                          misPtr, dispChannel);
-                indirect = clampWardRadiance(brdf * cosO * Li / (pdf * rrProb));
-            }
-        }
-
-        return clampWardRadiance(throughput * direct + indirect);
-    }
-
     Vector3f shadeGlossyWhitted(const Ray &ray, const Hit &hit, const Vector3f &hitPoint) const {
         auto *glossy = static_cast<GlossyMaterial *>(hit.getMaterial());
         Vector3f color = Vector3f::ZERO;
@@ -1265,26 +989,6 @@ private:
             Vector3f L, lightColor;
             light->getIllumination(hitPoint, L, lightColor);
             color += glossy->Shade(ray, hit, L, lightColor);
-        }
-        return color;
-    }
-
-    Vector3f shadeWardWhitted(const Ray &ray, const Hit &hit, const Vector3f &hitPoint) const {
-        auto *ward = static_cast<WardMaterial *>(hit.getMaterial());
-        Vector3f color = Vector3f::ZERO;
-        Vector3f V = ray.getDirection().normalized();
-        Vector3f N = ward->getShadingNormal(hit, V);
-        for (int i = 0; i < scene.getNumLights(); ++i) {
-            if (isDuplicateSplitAreaLight(scene, i)) {
-                continue;
-            }
-            Light *light = scene.getLight(i);
-            if (isInShadow(hitPoint, N, light)) {
-                continue;
-            }
-            Vector3f L, lightColor;
-            light->getIllumination(hitPoint, L, lightColor);
-            color += ward->Shade(ray, hit, L, lightColor);
         }
         return color;
     }

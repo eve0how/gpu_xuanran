@@ -70,7 +70,6 @@ private:
     Material *parseRefractMaterial();
     Material *parseEmissiveMaterial();
     Material *parseGlossyMaterial();
-    Material *parseWardMaterial();
     Object3D *parseObject(char token[MAX_PARSER_TOKEN_LENGTH]);
     Group *parseGroup();
     Sphere *parseSphere();

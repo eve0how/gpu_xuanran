@@ -3,27 +3,25 @@
 
 # 一、实现功能列表
 
-| 功能项 | 说明 |
-|--------|------|
-| **基础要求：Whitted-Style 光线追踪** |  完美镜面反射、Snell 折射、阴影射线、Phong 漫反射 |
-| **基础要求：路径追踪** |  余弦加权半球采样、俄罗斯轮盘赌（RR）、发光材质、面光源场景 |
-| **基础要求：Cook-Torrance 光泽材质** |  GGX D + Smith G + Schlick F；CPU/GPU `path` / `path_nee` / `path_mis` |
-| **基础要求：NEE** |  点光源 + 三角形面光源直接采样，阴影可见性测试 |
-| **BRDF 采样** |  `path` 模式：余弦加权半球 / GGX / Ward 瓣采样；无 NEE，直接光仅靠随机弹射命中发光体 |
-| **MIS（多重重要性采样）** |  `path_mis` 模式；光泽/Ward 面光 NEE 使用 power heuristic |
-| 色散|  折射材质按 RGB 通道独立 IOR；CLI `dispersion` |
-| Gamma 校正 |  BMP 保存前可选 `color^(1/2.2)`，CLI `gamma` |
-| 基于 OpenMP 的 CPU 并行加速 |  扫描行 `#pragma omp parallel for`，CLI `omp` |
-| 基于 CUDA 的 GPU 并行加速 |  `path` / `path_nee` / `path_mis` / `path_guiding`；Whitted 可选 |
-| 抗锯齿（AA）|  SPP > 1 时子样本哈希抖动，等价盒式滤波 |
-| 三角网格的纹理与法线贴图|  BMP albedo + normalMap；Plane/Sphere/TriangleMesh UV + TBN |
-| Path Guiding |  CUDA 两趟简化 Practical Path Guiding + NEE；`path_guiding` / `train_spp` |
-| BVH 加速 |  CPU 建树 + GPU 栈遍历；`no_bvh` 可关闭 |
+| 编号 | 功能项 |
+|------|--------|
+| 1 | Whitted 光线追踪 |
+| 2 | 路径追踪 |
+| 3 | Cook-Torrance 光泽材质 |
+| 4 | NEE |
+| 5 | BRDF 采样 |
+| 6 | MIS 采样 |
+| 7 | 色散 |
+| 8 | Gamma 校正 |
+| 9 | OpenMP CPU 并行 |
+| 10 | CUDA GPU 并行 |
+| 11 | 抗锯齿 (AA) |
+| 12 | 纹理与法线贴图 |
+| 13 | Path Guiding |
+| 14 | BVH 加速 |
 
 渲染器 CLI 模式：`whitted`、`path`（无 NEE）、`path_nee`、`path_mis`、`path_guiding`；  
 可选参数 `spp`、`gamma`、`omp`、`dispersion`、`cuda`、`no_bvh`、`train_spp N`。
-
-> **加分项（附录）**：Schlick 菲涅尔折射（附录 A）、Ward 各向异性 BRDF（附录 B）已实现并有独立实验图，正文功能表不重复展开。
 
 
 # 二、功能原理、实现与实验验证
@@ -78,13 +76,12 @@ $$
 
 间接贡献 $\displaystyle \frac{f_r \cos\theta_i\,L_i}{p_{\mathrm{total}}}$（再经 RR 除存活概率），保持 **无偏**，仅降低方差。
 
-**与 `path_mis` 的差异。** `path_guiding` 使用 `GPU_PATH_GUIDING`：`useNee=true`，`useMis=false`（间接路径不对 Emissive 计光，避免与 NEE 双计）。基线对比用 `path_mis`（NEE + Balance MIS 合并 BRDF/光源策略），见 §2.1.3。
+**与 `path_mis` 的差异。** `path_guiding` 使用 `GPU_PATH_GUIDING`：`useNee=true`，`useMis=false`（间接路径不对 Emissive 计光，避免与 NEE 双计）。基线对比用 `path_mis`（NEE + Balance MIS 合并 BRDF/光源策略），实现见 §2.1.3。
 
 #### 2.1.2 代码逻辑
 
-**涉及文件与职责**
 
-| 文件 | 函数/模块 | 作用 |
+| 代码文件 | 主要函数/模块 | 作用 |
 |------|-----------|------|
 | `src/cuda_scene_builder.cpp` | `SceneFlattener`、`buildGpuSceneHost` | 单线程扁平化场景并计算 AABB，供 $8^3$ 空间 cell 划分 |
 | `src/cuda_path_tracer.cu` | `guideDeposit` | 训练期将 (方向, 权重) 原子写入对应 cell 的 lat-long bin |
@@ -98,16 +95,7 @@ $$
 | `include/cuda_renderer.hpp` | `renderWithCuda` | 对外 CUDA 渲染入口 |
 | `src/main.cpp` | CLI 解析 | `path_guiding` / `train_spp N`；**必须** 配合 `cuda` |
 
-**执行流程。** CPU 完成场景扁平化后，GPU 以 16×16 线程块、每线程一像素并行。`renderWithCuda` 先跑 `trainGuideKernel`（训练 SPP 缺省为 `max(渲染 SPP, 256)`），再 `normalizeGuideKernel`，最后 `renderKernel` 写帧缓冲。引导表存于显存 `guideWeights`：训练用 `atomicAdd` 累积，渲染只读。`castRayPath` 中：训练时每次间接命中或 NEE 贡献后沉积；渲染时漫反射/光泽漫反射瓣调用 `sampleIndirectWithGuide`，空 cell 或采样失败则回退余弦半球。根路径保留 Emissive 可见性，间接子路径与 NEE 一致不计 Emissive。
-
-**与作业要求的对应**
-
-| 实验 | 场景 / 命令 | 验证点 |
-|------|-------------|--------|
-| §2.1.3 对比 | `scene_guiding_occluder.txt`：悬挂挡板，中央无直射 | 间接主导区方差下降 |
-| 基线 | `path_mis 128 cuda` | 同 NEE + MIS，无引导 |
-| 对照 | `path_guiding 128 cuda train_spp 256` | 阴影 ROI std 降约 42%（128 spp） |
-| 高 SPP | `train_spp 1024` 配 `512 spp` | 收敛后 guiding 仍更平滑 |
+**执行流程：** CPU 完成场景扁平化后，GPU 以 16×16 线程块、每线程一像素并行。`renderWithCuda` 先跑 `trainGuideKernel`（训练 SPP 为缺省值，取 `max(渲染 SPP, 256)`），再 `normalizeGuideKernel`，最后 `renderKernel` 写帧缓冲。引导表存于显存 `guideWeights`：训练用 `atomicAdd` 累积，渲染只读。`castRayPath` 中：训练时每次间接命中或 NEE 贡献后沉积；渲染时漫反射/光泽漫反射瓣调用 `sampleIndirectWithGuide`，空 cell 或采样失败则回退余弦半球。根路径保留 Emissive 可见性，间接子路径与 NEE 一致不计 Emissive。
 
 #### 2.1.3 实验分析与对比
 
@@ -115,7 +103,7 @@ $$
 
 ![128 SPP：左 path_mis，右 path_guiding](results/compare_128_side_by_side.png)
 
-*图 2.1a：128 SPP 并列对比。**左**：`path_mis`。**右**：`path_guiding`。全图亮度接近；中央被挡板阴影区 guiding 更平滑。*
+*图 2.1a：128 SPP 并列对比。**左**：`path_mis`。**右**：`path_guiding`。全图亮度接近；guiding 噪点更少，图像更平滑。*
 
 ![512 SPP：左 path_mis，右 path_guiding](results/compare_512_side_by_side.png)
 
@@ -123,7 +111,7 @@ $$
 
 ![128 SPP 中央阴影区 4× 放大](results/compare_128_zoom_4x.png)
 
-*图 2.1c：阴影 ROI（`(416,563)–(608,737)`）4× 放大。**左**：`path_mis` 颗粒粗。**右**：`path_guiding` 间接反弹更平滑；128 SPP 时阴影 ROI std 降约 **42%**，全图 mean 比 ≈ 1.01。*
+*图 2.1c：阴影 ROI（`(416,563)–(608,737)`）4× 放大。**左**：`path_mis` 颗粒粗。**右**：`path_guiding` 更平滑；128 SPP 时阴影 ROI std 降约 **42%**，全图 mean 比 ≈ 1.01。*
 
 **结论**：Path guiding 在相同 SPP 下主要 **降方差** 而非系统性增亮，适合遮挡导致的间接主导区域。
 
@@ -180,7 +168,7 @@ B 仅改变 **颜色纹理**；C 在相同 albedo 上用法线扰动 **光照与
 | `include/texture.hpp`、`src/texture.cpp` | `loadBMP`、`sample`、`sampleNormal` | 加载 24-bit BMP；UV repeat 最近邻采样 albedo；RGB 解码为切线空间法线 |
 | 同上 | `encodeNormal`、`generateShowcaseTextures` | 写法线 BMP（B,G,R 对应 $n_z,n_y,n_x$）；程序化生成灰泥/大理石贴图 |
 | `include/material.hpp` | `getShadedDiffuse`、`getShadingNormal` | albedo 纹理乘基色；法线贴图经 TBN 变换到世界空间并做 face shading |
-| 同上 | `GlossyMaterial`、`WardMaterial` | 覆写上述两函数，纹理逻辑与基类相同 |
+| 同上 | `GlossyMaterial` | 覆写上述两函数，纹理逻辑与基类相同 |
 | `include/plane.hpp`、`include/sphere.hpp` | `intersect` | 各图元计算 UV 与 TBN 基 |
 | `src/mesh.cpp` | `Mesh::intersect` | OBJ `vt` 重心插值 UV；由边与 $\Delta$uv 解 MikkTSpace 风格 TBN |
 | `src/scene_parser.cpp` | 材质解析 | 读取 `texture` / `normalMap` 路径并绑定到材质 |
@@ -189,24 +177,13 @@ B 仅改变 **颜色纹理**；C 在相同 albedo 上用法线扰动 **光照与
 
 **CPU 与 GPU 分工。** 纹理与法线贴图仅在 CPU 路径完整可用：`Plane` / `Sphere` / `Mesh` 在求交时写入 UV 与 TBN，`Material` 据此采样。GPU 扁平化（`SceneFlattener::buildMaterials`）只拷贝 diffuse/specular 等标量，**不上传** BMP 像素或 UV，故纹理验收须 **Whitted 或 CPU `path_nee`**，命令行 **勿加 `cuda`**。
 
-**与作业要求的对应**
-
-| 实验 | 命令（`code/` 下） | 说明 |
-|------|-------------------|------|
-| §2.2.3 Panel A | `./build/PA1-2 testcases/scene_texture_cornell_notex.txt ... whitted 1 gamma` | 无纹理对照 |
-| Panel B | `scene_texture_cornell.txt` + plaster albedo | 仅颜色 |
-| Panel C | `scene_texture_cornell_normal.txt` + albedo + normalMap | bump |
-| 贴图生成 | `./build/gen_textures` | 生成 `textures/*.bmp` |
-
-拼接脚本 `scripts/make_texture_showcase.py`。
-
 #### 2.2.3 实验分析与对比
 
 **对比设置**：Cornell 盒变体，Whitted 1 SPP + gamma，CPU only。
 
-| 面板 | 场景 | 后墙 | 说明 |
+| 面板 | 场景 | 后墙和球体 | 说明 |
 |------|------|------|------|
-| A | `scene_texture_cornell_notex.txt` | 纯色 | 对照 |
+| A | `scene_texture_cornell_notex.txt` | 均为纯色 | 对照 |
 | B | `scene_texture_cornell.txt` | plaster albedo | 仅颜色纹理 |
 | C | `scene_texture_cornell_normal.txt` | albedo + normalMap | bump 可见 |
 
@@ -244,6 +221,20 @@ B 仅改变 **颜色纹理**；C 在相同 albedo 上用法线扰动 **光照与
 
 **层次包围盒（BVH）。** 将三角集递归划分为子集，每节点存轴对齐包围盒（AABB）。内部节点两个子节点；叶节点存 $\le 4$ 个三角。查询时仅当射线与节点 AABB 相交才深入，期望访问 $O(\log n)$ 个节点（均匀分布下树深 $\approx \log_2 n$）。
 
+**射线–AABB 求交：Slab Method（平面束求交法）。** 遍历 BVH 时需频繁测试射线与 AABB 是否相交。本实现采用 **Slab Method**：将 AABB 视为三对平行平面（slab），射线 $\mathbf{o} + t\mathbf{d}$ 与各轴平面求交得 $t$ 区间，取三轴区间的交集判定命中。对轴 $i$：
+
+$$
+t_{i}^{\mathrm{near}} = \min\left(\frac{b_{\min,i}-o_i}{d_i}, \frac{b_{\max,i}-o_i}{d_i}\right),\quad
+t_{i}^{\mathrm{far}} = \max\left(\frac{b_{\min,i}-o_i}{d_i}, \frac{b_{\max,i}-o_i}{d_i}\right),
+$$
+
+$$
+t_{\mathrm{near}} = \max_i t_{i}^{\mathrm{near}},\quad
+t_{\mathrm{far}} = \min_i t_{i}^{\mathrm{far}}.
+$$
+
+命中当且仅当 $t_{\mathrm{near}} \le t_{\mathrm{far}}$ 且 $t_{\mathrm{near}} < t_{\mathrm{hit}}$。实现中用 **逆方向** $\mathbf{d}^{-1}$（分母近零时置 $10^{30}$）减少除法。
+
 **AABB 合并（建树）.** 三角 $t$ 的 AABB 为三顶点 min/max。节点包围盒为子三角（或子节点）AABB 的并：
 
 $$
@@ -256,21 +247,10 @@ $$
 2. 按质心坐标 $c_a = (v_{0,a}+v_{1,a}+v_{2,a})/3$ 用 `nth_element` 找 **中位数** 划分（等价 median split）。
 3. 若 `count <= 4` 则建叶；否则递归左右子树。
 
-**Slab 法射线–AABB 相交.** 射线 $\mathbf{o} + t\mathbf{d}$，对轴 $i$：
-
-$$
-t_{i}^{\mathrm{near}} = \min\left(\frac{b_{\min,i}-o_i}{d_i}, \frac{b_{\max,i}-o_i}{d_i}\right),\quad
-t_{\mathrm{near}} = \max_i t_{i}^{\mathrm{near}},\quad
-t_{\mathrm{far}} = \min_i t_{i}^{\mathrm{far}}.
-$$
-
-命中当且仅当 $t_{\mathrm{near}} \le t_{\mathrm{far}}$ 且 $t_{\mathrm{near}} < t_{\mathrm{hit}}$。实现中用 **逆方向** $\mathbf{d}^{-1}$（分母近零时置 $10^{30}$）减少除法。
-
 **叶节点与三角重排.** DFS `flatten` 将叶内三角 **按遍历顺序** 追加到 `bvhTriangles`，叶节点 `leftChild` 存该连续段起始下标，`primitiveCount` 存个数；内部节点 `primitiveCount=0`，`leftChild`/`rightChild` 为子 **节点索引**（预分配式 DFS，左子紧挨父后）。
 
 #### 2.3.2 代码逻辑
 
-**涉及文件与职责**
 
 | 文件 | 函数/模块 | 作用 |
 |------|-----------|------|
@@ -280,31 +260,25 @@ $$
 | 同上 | `intersectScene` | 球/平面仍线性遍历；**仅 mesh 三角** 走 BVH |
 | `src/main.cpp` | `no_bvh` 解析 | 传入 `renderWithCuda(..., useBvh=false)` 关闭 BVH |
 
-**数据结构。** `GpuBVHNode`（32 B 对齐）存 AABB、`leftChild`、`rightChild`、`primitiveCount`。叶节点 `primitiveCount > 0` 时 `leftChild` 为 `bvhTriangles` 连续段起始下标；内部节点 `primitiveCount == 0` 时子字段为子节点索引。每射线预计算 `invDir3(dir)` 供全部 AABB 测试。
+**数据结构:** `GpuBVHNode`（32 B 对齐）存 AABB、`leftChild`、`rightChild`、`primitiveCount`。叶节点 `primitiveCount > 0` 时 `leftChild` 为 `bvhTriangles` 连续段起始下标；内部节点 `primitiveCount == 0` 时子字段为子节点索引。每射线预计算 `invDir3(dir)` 供全部 AABB 测试。
 
-**范围说明。** BVH 为 **CUDA 三角求交** 优化；CPU Whitted / path 仍通过 `Group::intersect` 线性遍历 mesh，未接入 BVH。
+**范围:** BVH 为 **CUDA 三角求交** 优化；CPU Whitted / path 仍通过 `Group::intersect` 线性遍历 mesh，未接入 BVH。
 
-**与作业要求的对应**
+全帧加速约 **56×**（69.6/1.24）；单条射线对 ~1000 三角的 **求交次数** 可从 $O(n)$ 降至 $O(\log n)$ 量级（约数十次节点访问），若只计三角 intersection 环节，加速比可达 **数十倍**；全路径还含球/平面、着色、NEE 等，故帧时间比小于纯求交理论比。
 
-| 实验 | 设置 | 结果 |
-|------|------|------|
-| §2.3.3 | `scene_bvh_bunny.txt`，1024²，`path_nee 128 cuda` | BVH ON ≈ **4.8 s** |
-| 对照 | 同上 + `no_bvh` | ≈ **274 s**（约 **57×** 慢） |
-| 画质 | 像素逐通道对比 | **一致**（同算法，仅求交路径不同） |
-
-全帧加速约 **57×**（274/4.8）；单条射线对 ~1000 三角的 **求交次数** 可从 $O(n)$ 降至 $O(\log n)$ 量级（约数十次节点访问），若只计三角 intersection 环节，加速比可达 **数十倍**；全路径还含球/平面、着色、NEE 等，故帧时间比小于纯求交理论比。
-
-命令见附录 C。
+命令见附录。
 
 #### 2.3.3 实验分析与对比
 
-**对比设置**：`testcases/scene_bvh_bunny.txt`（Cornell 小盒 + Stanford Bunny ~1000 三角），1024×1024，`path_nee 128`，CUDA。
+**对比设置**：`testcases/scene_bvh_bunny.txt`（Cornell 小盒 + Stanford Bunny ~1000 三角），**512×512**，`path_nee 128`，CUDA。
 
 | | BVH ON | BVH OFF（`no_bvh`） |
 |--|--------|---------------------|
 | 遍历 | GPU 栈式 BVH，$O(\log n)$ | 线性扫全三角，$O(n)$ |
-| 128 SPP 耗时 | **≈4.8 s** | **≈274 s**（约 57× 慢） |
-| 画质 | 一致 | 一致（同算法，仅加速） |
+| 128 SPP 耗时 | **≈1.24 s** | **≈69.6 s**（约 **56×** 慢） |
+| 画质 | 一致 | 一致（同算法，仅求交路径不同） |
+
+> **若两图肉眼亮度不同**：根因通常是 **命令行 `gamma` 不一致**（旧版 `bvh_bunny_off` 漏写 `gamma`，左图 sRGB、右图线性），**不是** `no_bvh` 跳过 gamma 的代码缺陷。`main.cpp` 中 CUDA 两路径均经同一 `SaveBMP(..., applyGamma)`。同命令重渲后应 **逐像素一致**（本仓库复现：8-bit 量化下 mean abs diff ≈0，max diff ≤3，仅 1 像素差 1–3 级）。
 
 <table border="0" align="center">
   <tr>
@@ -317,7 +291,7 @@ $$
     <td align="center">
       <img src="results/bvh_bunny_off.png" width="400" height="400">
       <p style="margin-top:8px;font-size:14px;">
-        图 2.3b：BVH <strong>关闭</strong>（`no_bvh`）。像素结果一致，渲染时间约 <strong>57×</strong> 更长。
+        图 2.3b：BVH <strong>关闭</strong>（`no_bvh`）。**像素与左图一致**；渲染时间约 <strong>56×</strong> 更长。
       </p>
     </td>
   </tr>
@@ -341,7 +315,7 @@ $$
 |------|-----------|------|
 | `include/raytracer.hpp` | `castRayWhitted` | 主入口：递归追踪反射/折射，漫反射面终止于 Phong |
 | 同上 | `shadeDiffuse` | 遍历场景光源，`isInShadow` 后调用 `Material::Shade` |
-| 同上 | 镜面/折射分支 | `ReflectiveMaterial` 发射反射子射线；`RefractMaterial` 做 Snell/TIR（可选 Fresnel，见附录 A） |
+| 同上 | 镜面/折射分支 | `ReflectiveMaterial` 发射反射子射线；`RefractMaterial` 做 Snell/TIR 折射 |
 | `include/material.hpp` | `Material::Shade`、`EmissiveMaterial` | Phong 直接光；命中发光体直接返回 emission |
 | `src/main.cpp` | CLI | 模式 `whitted`，默认 SPP=1 |
 
@@ -358,12 +332,10 @@ $$
 
 #### 2.5.2 代码逻辑
 
-**涉及文件与职责**
-
 | 文件 | 函数/模块 | 作用 |
 |------|-----------|------|
 | `include/raytracer.hpp` | `castRayPath` | 主路径循环：按材质分发到各 `shade*Path` |
-| 同上 | `shadeDiffusePath`、`shadeGlossyPath`、`shadeWardPath` | 漫反射/光泽/Ward 命中点 BRDF 采样与递归 |
+| 同上 | `shadeDiffusePath`、`shadeGlossyPath` | 漫反射/光泽命中点 BRDF 采样与递归 |
 | 同上 | `sampleCosineHemisphere` | Lambertian 余弦加权半球采样 |
 | 同上 | RR 常量 | `RR_START_DEPTH=8`、`RR_MIN_SURVIVAL=0.15` 控制俄罗斯轮盘赌 |
 | `src/cuda_path_tracer.cu` | `castRayPath` | GPU 端镜像上述逻辑 |
@@ -373,48 +345,40 @@ $$
 
 #### 2.6.1 原理
 
-**Whitted-Style** 对镜面/折射材质 **递归** 追踪反射/折射子射线；在 **漫反射** 命中点 **终止** 递归，用 Phong 模型计算 **直接光**（遍历场景光源 + 阴影射线），**不做** 间接光多次反弹。
+**Whitted-Style 光线追踪** 在镜面与折射材质上 **确定性递归** 追踪反射/折射子射线；在漫反射命中点 **终止** 递归，通过 Phong 模型与场景光源建立 **直接光照** 连接，**不计算** 间接多次反弹。
 
-**路径追踪** 在同一命中点按 BRDF **随机** 采样出射方向，递归估计渲染方程，可包含 **间接光**（颜色渗透、软阴影等），但有限 SPP 下存在 MC 噪声；且 **`path` 模式不启用 NEE**，直接光只能指望随机弹射 **间接** 命中光源。
+**路径追踪（`path_nee`）** 在同一命中点按 BRDF **蒙特卡洛采样** 出射方向，递归估计渲染方程；`path_nee` 对 **点光源** 调用 `PointLight::getIllumination` 做 NEE，经阴影射线可见性测试后注入直接光，并可继续追踪间接弹射。有限 SPP 下存在采样噪声。
 
-**公平对比前提**：两模式须 **同几何、同光源类型**。Whitted 的经典设计对象是 **点光源 / 方向光** 下的 Phong 直接光 + 镜面递归；对面光源仅能做方向近似，并非面积积分。故 §2.6  deliberately 使用 **单一点光源** 场景 `testcases/scene_whitted_path_compare.txt`（Cornell Box + 五球 + 贴地玻璃立方体，与 `scene_whitted.txt` 同几何），**PointLight** 位于 `(0, 1.9, 0)`、颜色 `(2, 2, 2)`，1024×1024。**面光源 + NEE 方差对比** 独立放在 §2.7（`scene_path.txt`），避免 Whitted 面光近似与 Path 面积采样混为一谈。
+本节在 **同几何、同点光源、同位置** 场景 `testcases/scene_whitted_path_compare.txt`（Cornell Box + 五球 + 贴地玻璃立方体，**唯一** PointLight `(0, 1.9, 0)`，1024×1024）下做 **公平对比**：Whitted 与 `path_nee` **均使用同一颗点光源**。Whitted 原生支持点光 Phong 直接光；`path_nee` 通过 NEE 对同一点光采样。面光源与 NEE 方差对比独立放在 §2.7（`scene_path.txt`）。
 
-#### 2.6.2 代码逻辑
+三个对比维度：
 
-**涉及文件与职责**
+1. **全局光照（GI）**：Whitted 漫反射面不追踪间接弹射，墙面交界呈硬切、无红/绿墙 **颜色渗透**；`path_nee` 经多次漫反射产生 color bleeding，邻墙与地板可见间接染色。
+2. **阴影**：点光源下 Whitted 对每光源发射 **单条阴影射线**，产生 **硬阴影**；`path_nee` 直接光阴影同样硬，但间接弹射在阴影区注入 **环境色填充**，边界略软、暗部不死黑。**面光源软阴影** 见 §2.7。
+3. **焦散（Caustics）**：Whitted 对玻璃材质 **确定性折射** 汇聚点光，在地板形成清晰亮斑；`path_nee` 以 MC 估计折射路径，焦散更柔和、128 SPP 下仍有噪。
 
-| 文件 | 函数/模块 | 作用 |
-|------|-----------|------|
-| `include/raytracer.hpp` | `castRayWhitted` | Whitted 主循环：镜面/折射递归；漫反射 → `shadeDiffuse` |
-| 同上 | `shadeDiffuse` | 遍历 `scene.getNumLights()`，对每个光源 `isInShadow` 后 `Material::Shade`（Phong） |
-| 同上 | `isInShadow` | Whitted 阴影射线；**EMISSIVE 不视为遮挡**（修复面光可见性） |
-| 同上 | `isSegmentOccluded` | NEE 阴影段测试；EMISSIVE 同样放行 |
-| `include/light.hpp` | `PointLight::getIllumination` | Whitted 下给出 **确定** 入射方向与强度（$1/r^2$ 衰减在 `shadeDiffuse` 中处理） |
-| 同上 | `castRayPath` | 路径追踪：BRDF 半球采样 + RR；`path` 模式 **无** `sampleDirectPointLights` |
-| `src/cuda_path_tracer.cu` | `castRayWhitted`、`isInShadow` | GPU Whitted 镜像逻辑 |
-| `src/main.cpp` | CLI | `whitted` 默认 SPP=1；`path` 默认 SPP=64 |
+**Whitted 与 `path_nee` 的差异（本场景：同一点光源）**
 
-**Whitted 与 Path 的直接光差异（本场景：点光源）**
+| 环节 | Whitted | `path_nee` |
+|------|---------|------------|
+| 漫反射直接光 | Phong + `PointLight` + 单条阴影射线 | NEE 点光 + 阴影射线 + BRDF 权重 |
+| 间接光 | **无**（漫反射面终止） | BRDF 弹射递归 + RR |
+| 阴影 | 纯硬阴影 | 硬直接阴影 + 间接填充 |
+| 玻璃焦散 | 确定性折射路径，亮斑锐利 | MC 折射路径，亮斑柔和、有噪 |
 
-| 环节 | Whitted | `path`（无 NEE） |
-|------|---------|------------------|
-| 漫反射直接光 | Phong + `PointLight` + 单条阴影射线 | **无** 显式光源采样 |
-| 命中点光源概率 | N/A（解析连接） | **0**（零测度，随机半球几乎不可能对准 $\delta$ 光源） |
-| 间接光 | **无**（漫反射面终止） | 无 NEE 时 **无法注入能量**，间接项亦为 0 |
-| 玻璃焦散 | 确定性折射路径可见亮斑 | 同上，无直接光则焦散路径无辐射源 |
+#### 2.6.2 实验分析与对比
 
-#### 2.6.3 实验分析与对比
+**对比设置**：`testcases/scene_whitted_path_compare.txt`，单 **PointLight** `(0, 1.9, 0)`，1024×1024，`gamma`，OpenMP（CPU）。**唯一算法变量**：Whitted vs `path_nee`（均含点光直接光）。
 
-**对比设置**：`testcases/scene_whitted_path_compare.txt`，单 **PointLight** `(0, 1.9, 0)`，1024×1024，`gamma`，OpenMP（CPU）。
-
-| | Whitted | 路径追踪（`path`，无 NEE） |
-|--|---------|---------------------------|
-| 命令 | `whitted 1 gamma omp` | `path 64 gamma omp` |
-| 直接光 | Phong + 点光阴影测试 | 无显式光源连接 |
-| 全局光照 | 无间接反弹、无红/绿墙色溢 | 全黑（零测度光源无法被 BRDF 弹射命中） |
-| 噪声 | 无（确定性） | 无可见信号（非「颗粒」，而是估计量为 0） |
-| 全图线性亮度均值 | ≈**0.44** | ≈**0.00** |
-| 渲染时间 | ≈**0.8 s** | ≈**202 s** |
+| | Whitted | 路径追踪（`path_nee`） |
+|--|---------|------------------------|
+| 命令 | `whitted 1 gamma omp` | `path_nee 128 gamma omp` |
+| 光源 | 同一点光 `(0, 1.9, 0)` | 同一点光（NEE 采样） |
+| 全局光照 | 无间接反弹、无红/绿墙色溢 | 有 color bleeding |
+| 阴影 | 硬阴影 | 硬直接 + 间接柔化 |
+| 焦散 | 确定性锐利亮斑 | MC 柔和、有噪 |
+| 全图线性亮度均值 | ≈**0.46** | ≈**0.53** |
+| 渲染时间 | ≈**1.0 s** | ≈**636 s** |
 
 <table border="0" align="center">
   <tr>
@@ -427,34 +391,45 @@ $$
     <td align="center">
       <img src="results/whitted_compare_path.png" width="400" height="400">
       <p style="margin-top: 8px; font-size: 14px;">
-        图 2.6b：路径追踪 <strong>无 NEE</strong>（64 SPP，同场景）。点光源为零测度，<code>path</code> 不采样光源 → 直接光与间接光均无法启动，整图为黑。
+        图 2.6b：<code>path_nee</code>（128 SPP，<strong>同场景同点光</strong>）。NEE 注入直接光 + 间接 GI；红/绿墙色溢可见；阴影区有间接填充；玻璃焦散更柔和、有 MC 噪。
       </p>
     </td>
   </tr>
 </table>
 
-**视觉差异分析**：
+**视觉差异分析**（对应 §2.6.1 三维度）：
 
-1. **算法分工**：Whitted 在漫反射面 **显式** 做点光 Shading；Path 的 `path` 模式只做 BRDF 弹射，**必须** 靠 NEE（`path_nee`）或 emissive 几何才能连接光源——本节刻意不开 NEE，以暴露这一结构差异。
-2. **全局光照**：Whitted 墙面交界 **硬切**、无颜色渗透；Path 图无可见辐射度，故 **无法** 展示间接 GI——并非 Path「不支持」GI，而是 **无 NEE + 无发光体** 时 MC 路径无法从点光源取到样本。
-3. **阴影**：Whitted 单条阴影射线 → **硬阴影**（点光特性）；Path 侧无照度，无阴影可谈。
-4. **焦散**：Whitted 玻璃立方体将点光 **折射** 到地板形成亮斑；Path 无 NEE 时子路径同样无法连接 $\delta$ 光源，故无焦散。
-5. **与 §2.7 的关系**：面光源有 **有限面积**，无 NEE 的 Path 仍能以 **极小概率** 随机命中发光天花板，得到 **偏暗、高噪** 的图（图 2.7a，均值 ≈0.31）；NEE 则将其变为 $O(1)$ 直接估计。§2.6 用点光隔离 **Whitted 直接光 vs Path 无光源采样**；§2.7 用面光隔离 **NEE 方差缩减**。
+1. **全局光照**：Whitted（图 2.6a）红/绿墙与邻接面 **硬切**，无间接色溢；`path_nee`（图 2.6b）地板与侧墙可见 **红/绿渗透**，整体更亮（均值 ≈0.53 vs ≈0.46）。
+2. **阴影**：Whitted 球体与立方体下 **锐利硬阴影**；`path_nee` 直接光阴影仍硬，但阴影内与接触区有 **间接光填充**，暗部不死黑。
+3. **焦散**：Whitted 玻璃立方体 **确定性折射** 至地板，亮斑边界清晰；`path_nee` 同样可见焦散，但更 **扩散、有噪**，属 MC 估计特性。
 
-> 复现：`./build/PA1-2 testcases/scene_whitted_path_compare.txt … whitted 1 gamma omp` 与 `path 64 gamma omp`；场景说明见 `testcases/scene_whitted_path_compare.README.txt`。
+> 复现：`./build/PA1-2 testcases/scene_whitted_path_compare.txt … whitted 1 gamma omp` 与 `path_nee 128 gamma omp`；场景说明见 `testcases/scene_whitted_path_compare.README.txt`。
 
 ### 2.7 NEE（Next Event Estimation）
-
-> **为什么使用 NEE 会有收敛速度的明显提升？**  
-> 两模式求解 **同一渲染方程**、期望相同；差异来自 **方差与采样效率**——无 NEE 时直接光只能靠随机弹射 **极小概率** 命中发光体，64 SPP 下大量样本贡献 ≈ 0，画面偏暗、颗粒重；NEE 在每个漫反射命中点 **显式向面光采样** 并除以已知 pdf，将直接光从「稀有事件」变为 **$O(1)$ 估计**。详细论证与定量对比见 **§2.7.3**。
 
 #### 2.7.1 原理
 
 在 `path_nee` 模式下，漫反射/光泽命中点 **额外** 向光源采样直接光：
 
-- **点光源**：`PointLight::getIllumination` 给方向，阴影射线判断遮挡，贡献 `BRDF × Le × cosθ`。
-- **面光源**：三角形上均匀采样，立体角 pdf：`pdf_ω = pdf_area × r² / cosθ_l`，贡献  
-  `Le × (albedo/π) × cosθ_o / pdf_ω`。
+- **点光源**：`PointLight::getIllumination` 给出入射方向 $\omega_i$ 与发光强度 $L_e$，经阴影射线可见性测试后，直接光贡献为
+
+  $$
+  L_{\mathrm{direct}} = f_r(\omega_o, \omega_i) \cdot L_e \cdot \frac{\cos\theta}{r^2},
+  $$
+
+  其中 $r$ 为命中点到光源距离，$\cos\theta$ 为法线与入射方向夹角余弦。
+
+- **面光源**：在 AreaLight 三角形上 **均匀面积采样** 得光源点 $\mathbf{x}_l$，构造 $\omega_i$，立体角 pdf 为
+
+  $$
+  \mathrm{pdf}_\omega = \frac{1}{A}\cdot\frac{r^2}{\cos\theta_l},
+  $$
+
+  直接光贡献
+
+  $$
+  L_{\mathrm{direct}} \approx \frac{L_e \cdot f_r \cdot \cos\theta_o}{\mathrm{pdf}_\omega}.
+  $$
 - **避免双重计数**：NEE 开启时，由漫反射弹射出去的间接光线 **不再** 对 `EmissiveMaterial` 累加辐射度；镜面/折射路径仍可命中发光体。
 - **阴影射线**：法向偏移；发光体不再视为「透明」。
 
@@ -466,107 +441,43 @@ $$
 
 | 文件 | 函数/模块 | 作用 |
 |------|-----------|------|
-| `include/raytracer.hpp` | `sampleOneAreaLightDiffuse/Glossy/Ward` | 面光源均匀采样 + 阴影可见性测试 |
+| `include/raytracer.hpp` | `sampleOneAreaLightDiffuse/Glossy` | 面光源均匀采样 + 阴影可见性测试 |
 | 同上 | `pdfAreaLightDirection`、`computeAreaLightPdf` | 立体角 pdf 计算 |
 | 同上 | `castRayPath` | NEE 开启时间接子路径 `indirectEmissive=false`，避免与直接光双计 |
 | `include/light.hpp` | `PointLight`、`AreaLight` | 点光方向与面光三角几何 |
 | `src/scene_parser.cpp` | AreaLight 解析 | 从场景文件构建三角形面光源 |
 | `src/cuda_path_tracer.cu` | NEE 分支 | GPU `castRayPath` 内嵌相同 NEE 逻辑 |
 
-#### 2.7.3 核心问题：NEE 为何显著提升收敛速度？
+#### 2.7.3 问题：NEE 为何显著提升收敛速度？
+> 两模式求解 **同一渲染方程**、期望相同；差异来自 **方差与采样效率**——无 NEE 时直接光只能靠随机弹射 **极小概率** 命中发光体，64 SPP 下大量样本贡献 ≈ 0，画面偏暗、颗粒重；NEE 在每个漫反射命中点 **显式向面光采样** 并除以已知 pdf，将直接光从「稀有事件」变为 **$O(1)$ 估计**。
 
 <table border="0" align="center">
   <tr>
     <td align="center">
-      <img src="results/path_no_nee_64.png" width="400" height="400">
+      <img src="results/path_256.png" width="400" height="400">
       <p style="margin-top: 8px; font-size: 14px;">
-        图 2.7a：<code>path</code> <strong>无 NEE</strong>（64 SPP）。直接光仅靠随机弹射命中 0.16 m² 发光区；大面积欠曝、颗粒重，地板接触阴影边界斑驳。
+        图 2.7a：<code>path</code> <strong>无 NEE</strong>（256 SPP）。欠曝、颗粒重，地板接触阴影边界斑驳。
       </p>
     </td>
     <td align="center">
-      <img src="results/path_nee_cornell.png" width="400" height="400">
+      <img src="results/path_nee_256.png" width="400" height="400">
       <p style="margin-top: 8px; font-size: 14px;">
-        图 2.7b：<code>path_nee</code> <strong>含 NEE</strong>（64 SPP，同场景同 SPP）。显式面光采样 + 阴影测试；整体照亮、色溢与软阴影在同等样本下已可用。
+        图 2.7b：<code>path_nee</code> <strong>含 NEE</strong>（同场景同 SPP）。显式面光采样 + 阴影测试。
       </p>
     </td>
   </tr>
 </table>
-**对比设置（公平性）**：`testcases/scene_path.txt`（Cornell Box + 五球 + 玻璃立方体，天花板 **AreaLight 三角形** 与 EmissiveMaterial 重合），1024×1024，**SPP=64**，`gamma`，OpenMP（CPU）；**唯一变量** 为 `path`（无 NEE）vs `path_nee`（含 NEE）。本节使用 **面光源** 场景；§2.6 的 Whitted vs Path 对比则使用 **点光源** 场景 `scene_whitted_path_compare.txt`，两节场景与目的不同、互不混用图像。
 
-##### 一、方差与「稀有事件」：随机弹射几乎打不中面光
-
-`path` 模式下，漫反射命中点的直接光 **没有** 显式光源采样，只能指望子路径经 BRDF 随机弹射后 **间接** 命中 `EmissiveMaterial` 或 AreaLight 几何。本场景天花板发光区为 **0.4 m × 0.4 m**（两片三角形拼成，总面积 $A \approx 0.16\,\mathrm{m}^2$），相对整个盒内可见半球方向是 **极小目标**。
-
-对地板中心附近一点（$r \approx 2\,\mathrm{m}$ 到光源），发光体所张立体角量级为
-
-$$
-\Omega_{\mathrm{light}} \approx \frac{A \cos\theta_l}{r^2} \approx \frac{0.16}{4} \approx 0.04\,\mathrm{sr},
-$$
-
-而余弦加权半球积分域为 $\pi$ 立体角量级。单次 BRDF 弹射 **命中发光体** 的概率仅为 **百分之几以下**（且相机 primary 先打到的可能是侧墙/球体，需多次弹射才「看见」灯）。因此：
-
-- 大量路径样本对直接光项贡献 **≈ 0**（稀有事件未发生）；
-- 少数命中样本贡献 **很大**（$1/p$ 量级），MC 方差 $\mathrm{Var} \propto 1/p$ 爆炸；
-- 同 SPP 下像素均值 **系统性偏低**（欠曝），同时可见 **重颗粒**——并非场景「本来就该暗」，而是估计器方差过大、样本不足。
-
-图 2.7a 全图线性亮度均值约 **0.31**（64 SPP），主因即 **无 NEE 的直接光方差**，而非方程不同。对比 §2.6：点光源为零测度，无 NEE 时 Path 图 **全黑**（均值 ≈0）；面光源有有限面积，仍能以极小概率命中，故可见 **偏暗但有结构** 的图。
-
-##### 二、pdf 与 $O(1)$ 直接光估计：NEE 把低概率变成稳定项
-
-`path_nee` 在每次漫反射/光泽命中点 **额外** 执行 Next Event Estimation：在 AreaLight 三角形上 **均匀面积采样** 得 $\mathbf{x}_l$，构造 $\omega_i = (\mathbf{x}_l - \mathbf{x})/\|\cdot\|$，经阴影射线 `isSegmentOccluded` 可见性测试后，按立体角 pdf 累加直接光：
-
-$$
-L_{\mathrm{direct}} \approx \frac{L_e \cdot ( \mathbf{albedo}/\pi ) \cdot \cos\theta_o}{\mathrm{pdf}_\omega}, \qquad
-\mathrm{pdf}_\omega = \frac{1}{A}\cdot\frac{r^2}{\cos\theta_l}.
-$$
-
-（实现见 `sampleOneAreaLightDiffuse` / `computeAreaLightPdf`：面积 pdf 经 $r^2/\cos\theta_l$ 换元到立体角。）
-
-| 策略 | 直接光如何估计 | 单样本贡献量级 | 同 SPP 收敛 |
-|------|----------------|----------------|-------------|
-| `path`（无 NEE） | 随机 BRDF 弹射 **间接** 命中发光体 | 0 或 $O(1/p)$，$p \ll 1$ | 慢；均值偏低、噪重 |
-| `path_nee` | 每命中点 **显式** 向光源采样 + 除以 $\mathrm{pdf}_\omega$ | $O(1)$，与 $p$ 无关 | 快；亮度与软阴影迅速稳定 |
-
-**关键**：两模式 **数学期望相同**（对同一渲染方程的无偏 MC 估计），NEE 不改变物理，只把 **难采样的直接光积分** 从「间接稀有命中」改写为 **已知 pdf 的重要性采样**，方差通常下降 **数个数量级**，故 **同等 SPP 下视觉收敛明显加快**。
-
-NEE 开启时间接子路径设 `indirectEmissive=false`，避免与直接项 **双重计光**；阴影射线对 EMISSIVE 放行（与 Whitted `isInShadow` 逻辑一致）。
-
-
-
-##### 四、定量与观感（64 SPP，`scene_path.txt`）
-
-| 指标 | `path`（无 NEE） | `path_nee`（含 NEE） |
-|------|------------------|----------------------|
-| 渲染方程 / 场景 | 相同 | 相同 |
-| 全图线性亮度均值 | **≈0.31**（显著偏低） | **≈0.48**（接近期望照度） |
-| 非黑像素占比（lum $> 0.01$） | **≈75%**（大量像素直接光样本偏低） | **≈100%** |
-| 直接光方差 | 高（$p_{\mathrm{hit}} \ll 1$，$\mathrm{Var}\propto 1/p$） | 低（$\mathrm{pdf}_\omega$ 已知、$O(1)$ 贡献） |
-| 64 SPP 观感 | 暗、噪、阴影边界斑驳 | 亮、稳、软阴影可辨 |
-| 渲染时间（CPU OMP，1024²） | ≈**683 s**（见验收日志） | 略增（每命中点多光源采样 + 阴影射线） |
-
-> 复现：`./build/PA1-2 testcases/scene_path.txt output/report/path_no_nee_64.bmp path 64 gamma omp` 与 `path_nee 64 gamma omp`；PNG 见 `results/path_no_nee_64.png`、`results/path_nee_cornell.png`（`results/README.txt` §2.7）。
-
-##### 五、结论（收敛速度）
-
-1. **期望一致**：`path` 与 `path_nee` 无系统偏差；NEE 是 **方差缩减**，不是「多加光」。
-2. **收敛快的原因**：小面光 + 室内场景下，纯 BRDF 弹射命中光源是 **稀有事件**；NEE 用 $\mathrm{pdf}_\omega$ 把直接光变为 **每像素每弹射 $O(1)$ 估计**，64 SPP 即可达到无 NEE 需数百 SPP 才接近的亮度与阴影质量。
-3. **与后续章节**：§2.8 MIS 在 NEE 与 BRDF 均可解释同一方向时进一步合并 pdf；§2.6 在 **点光源** 下对比 Whitted **确定性直接光** vs Path **无光源采样**（整图全黑）；本节在 **面光源** 下隔离 **同 Path 框架内 NEE 开关** 的方差效应。
-
----
-
-### 2.8 MIS（多重重要性采样）
+### 2.8 其他采样方式
 
 #### 2.8.1 原理
 
-路径追踪在每个非镜面命中点需估计 **直接光** 与 **间接光**。本实现同时支持两条采样策略：
+路径追踪在每个非镜面命中点需估计 **直接光** 与 **间接光**。又实现了以下两种采样策略：
 
 **BRDF 采样（`path` 模式的基础）。** 从材质 BRDF 按 pdf 采样出射方向 $\omega_i$，再追踪子路径得到 $L_i$，贡献 $f_r \cos\theta / \mathrm{pdf}_{\mathrm{BRDF}}$。
 
 - **漫反射**：余弦加权半球 `sampleCosineHemisphere`，$\mathrm{pdf} = \cos\theta / \pi$。
 - **GGX 光泽**：按 $k_d$/$k_s$ 能量比选择漫反射瓣或镜面瓣；镜面瓣对 GGX 半向量 `sampleGGXHalfVector` 采样，再反射得 $\omega_i$，用 `pdfGlossyBRDF` 归一化。
-- **Ward**：类似瓣选择，半向量由 `sampleWardHalfVector` 采样。
-
-**光源采样（NEE）。** 在 `path_nee` / `path_mis` 下，命中点额外向 AreaLight 均匀采样 + 阴影测试，估计直接光；间接路径默认 **不对 Emissive 重复计光**（`indirectEmissive=false`），避免与 NEE 双计。
 
 **MIS 合并。** 当 BRDF 与光源两条策略均可估计同一项时，用 **power heuristic**（$\beta=2$）合并 pdf，降低 firefly：
 
@@ -574,8 +485,10 @@ $$
 w(\omega_i) = \frac{p(\omega_i)^2}{p_{\mathrm{light}}(\omega_i)^2 + p_{\mathrm{BRDF}}(\omega_i)^2}
 $$
 
+其中分子的 $p(\omega_i)$ 为 **当前生成该样本所选策略** 的概率密度（PDF）。
+
 - **`path`**：仅 BRDF 采样，无 NEE；直接光只能靠随机弹射命中发光体，方差极大（见 §2.7.3）。
-- **`path_nee`**：NEE + BRDF 间接；光泽/Ward 面光 NEE 已启用 power-heuristic MIS（`useGlossyNEEMIS()`），避免掠射角 BRDF 爆炸。
+- **`path_nee`**：NEE + BRDF 间接；光泽面光 NEE 已启用 power-heuristic MIS（`useGlossyNEEMIS()`），避免掠射角 BRDF 爆炸。
 - **`path_mis`**：在 `path_nee` 基础上，间接路径 **也对 Emissive 计光**（`indirectEmissive=true`），子路径命中发光体时用 `MisCtx` 携带 BRDF pdf，与 `computeAreaLightPdf` 做 power MIS 降权。
 
 #### 2.8.2 代码逻辑
@@ -585,8 +498,8 @@ $$
 | 文件 | 函数/模块 | 作用 |
 |------|-----------|------|
 | `include/raytracer.hpp` | `sampleCosineHemisphere`、`sampleGGXHalfVector` | 漫反射 / GGX 镜面 BRDF 方向采样 |
-| 同上 | `pdfDiffuseBRDF`、`pdfGlossyBRDF`、`pdfWardBRDF` | 各瓣 BRDF 采样 pdf，供 MIS 分母 |
-| 同上 | `shadeDiffusePath`、`shadeGlossyPath`、`shadeWardPath` | 间接路径：BRDF 采样 + 可选 `MisIndirectCtx` |
+| 同上 | `pdfDiffuseBRDF`、`pdfGlossyBRDF` | 各瓣 BRDF 采样 pdf，供 MIS 分母 |
+| 同上 | `shadeDiffusePath`、`shadeGlossyPath` | 间接路径：BRDF 采样 + 可选 `MisIndirectCtx` |
 | 同上 | `sampleDirectEmissiveBRDF` 等 | NEE 直接光；光泽面光 NEE 内嵌 power MIS |
 | 同上 | `misWeightPower`、`computeAreaLightPdf` | power heuristic 权重与光源 pdf |
 | 同上 | `RenderMode::PATH_TRACE` / `_NEE` / `_MIS`、`useMIS()` | 三模式开关及间接 Emissive 策略 |
@@ -647,7 +560,6 @@ $$
 
 #### 2.9.2 代码逻辑
 
-**涉及文件与职责**
 
 | 文件 | 函数/模块 | 作用 |
 |------|-----------|------|
@@ -663,7 +575,6 @@ $$
 <p align="center">光泽 Cornell 五球（path_nee 64）</p>
 *图 2.9a：`scene_glossy.txt`，`path_nee 64`。塑料（有 $k_d$ + GGX 高光）与金属（$k_d=0$，宽软高光）对比。*
 
----
 
 ### 2.10 色散（Dispersion）
 
@@ -699,6 +610,8 @@ $$
 
 **线性 radiance 与显示编码。** 渲染器内部累积的是 **物理线性** 辐射亮度 $L \in [0,\infty)$（float HDR）；标准 8-bit 显示器遵循近似 **sRGB** 非线性响应：人眼对暗部更敏感，若直接把线性值映射到 $[0,255]$，中间调会偏暗、高光细节被压缩。
 
+**Gamma 校正必须在所有光线追踪物理计算（线性空间）完成后、写入图像文件（BMP）之前进行**——追踪、BRDF 评估、路径累积均在 **线性 radiance** 下进行；Gamma 仅作用于 **写盘编码** 阶段，不参与任何光照积分。
+
 **Gamma 编码（本实现）。** 保存 BMP 前可选对每通道做 **display gamma** 变换（标准近似 $\gamma \approx 2.2$）：
 
 $$
@@ -713,7 +626,6 @@ $$
 
 #### 2.11.2 代码逻辑
 
-**涉及文件与职责**
 
 | 文件 | 函数/模块 | 作用 |
 |------|-----------|------|
@@ -722,14 +634,7 @@ $$
 | `src/main.cpp` | `parseGammaFlag` | 解析 `gamma` / `--gamma` 布尔标志 |
 | 同上 | CPU/GPU 出口 | CPU 循环与 `renderWithCuda` 成功后均调用 `SaveBMP(..., applyGamma)` |
 
-**行为说明。** Gamma 仅影响写盘编码，不改变追踪阶段线性 radiance。默认关闭；报告对比图通常开启以获得正常观感。`gamma` 可与其他 CLI 参数任意混排。
-
-**与作业要求的对应**
-
-| 实验 | 命令（`code/` 下） |
-|------|-------------------|
-| §2.11.3 线性 | `./build/PA1-2 testcases/scene_whitted.txt output/report/gamma_before.bmp whitted 1 cuda` |
-| sRGB 编码 | `./build/PA1-2 testcases/scene_whitted.txt output/report/gamma_after.bmp whitted 1 gamma cuda` |
+Gamma 仅影响写盘编码，不改变追踪阶段线性 radiance。默认关闭；报告对比图通常开启以获得正常观感。`gamma` 可与其他 CLI 参数任意混排。
 
 #### 2.11.3 实验分析与对比
 
@@ -776,8 +681,6 @@ $$
 
 #### 2.12.2 代码逻辑
 
-**涉及文件与职责**
-
 | 文件 | 函数/模块 | 作用 |
 |------|-----------|------|
 | `CMakeLists.txt` | OpenMP 链接 | `FIND_PACKAGE(OpenMP)` 并链接 `OpenMP::OpenMP_CXX` |
@@ -785,14 +688,8 @@ $$
 | 同上 | 扫描线并行循环 | `#pragma omp parallel for schedule(dynamic, 4) if (useOmp)` 并行 `y` 外层 |
 | 环境变量 | `OMP_NUM_THREADS` | 控制线程数（标准 OpenMP，非程序参数） |
 
-**设计要点。** 每像素独立 `RayTracer` 与 RNG seed，无写共享；并行 `y` 行配合 `dynamic, 4` 缓解行间负载不均。`cuda` 成功时 GPU 路径直接 return，不进入 OpenMP 循环。并行时关闭 scanline 日志以避免 `cout` 竞争。
+**设计要点:** 每像素独立 `RayTracer` 与 RNG seed，无写共享；并行 `y` 行配合 `dynamic, 4` 缓解行间负载不均。`cuda` 成功时 GPU 路径直接 return，不进入 OpenMP 循环。并行时关闭 scanline 日志以避免 `cout` 竞争。
 
-**与作业要求的对应**
-
-| 实验 | 命令 |
-|------|------|
-| §2.12.3 串行 | `./build/PA1-2 testcases/scene_path.txt output/report/omp_serial.bmp path_nee 32 gamma` |
-| 并行 | `./build/PA1-2 testcases/scene_path.txt output/report/omp_parallel.bmp path_nee 32 gamma omp` |
 
 #### 2.12.3 实验分析与对比
 
@@ -850,9 +747,6 @@ $$
 
 1. **正确性**：Whitted 确定性光照下 OpenMP 与串行 **逐像素相同**；路径模式每像素 seed 独立，并行仅改变调度顺序，画质 **统计同分布**。
 2. **加速比低于 10×**：场景解析、单线程 BMP 写盘、以及 OS 调度开销构成串行尾部；路径模式单像素耗时更长，OpenMP 收益更明显。
-3. **勿与 `cuda` 同用**：GPU 路径已一线程一像素，再开 OpenMP 无意义且被代码跳过。
-
-**结论**：OpenMP 为 **纯 CPU 墙钟优化**，不改变渲染方程或采样；大分辨率路径追踪验收 **强烈建议** `omp`。
 
 
 ### 2.13 GPU 加速（CUDA）
@@ -877,8 +771,6 @@ $$
 
 #### 2.13.2 代码逻辑
 
-**涉及文件与职责**
-
 | 文件 | 函数/模块 | 作用 |
 |------|-----------|------|
 | `src/cuda_scene_builder.cpp` | `SceneFlattener`、`buildGpuSceneHost` | 将 C++ 场景树扁平化为 SOA（材质、三角、光源等） |
@@ -888,15 +780,7 @@ $$
 | 同上 | `castRayPath`、`castRayWhitted` | 与 CPU `raytracer.hpp` 镜像的着色与路径逻辑 |
 | `include/cuda_renderer.hpp` | `cudaAvailable`、`renderWithCuda` | 对外 API；失败时 `main` 回退 CPU OpenMP |
 
-**执行流程。** Host 扁平化场景并可选建树 → `cudaMalloc`/`cudaMemcpy` 上传 → `renderKernel` 写 float RGB → 回读 `Image` → `SaveBMP`。`main.cpp` 中 CUDA 成功则直接 return，不进入 OpenMP 循环。算法覆盖 NEE、MIS、GGX、色散、Fresnel 等，与 CPU 一致。
-
-**与作业要求的对应**
-
-| 实验 | 命令 |
-|------|------|
-| §2.13.3 CPU | `./build/PA1-2 testcases/scene_bvh_bunny.txt output/report/bunny_w_cpu.bmp whitted 1 gamma omp` |
-| GPU | `./build/PA1-2 testcases/scene_bvh_bunny.txt output/report/bunny_w_cuda.bmp whitted 1 gamma cuda` |
-| 路径模式 + BVH | `./build/PA1-2 testcases/scene_bvh_bunny.txt output/bvh_compare/bunny_gpu_bvh_on_path128.bmp path_nee 128 cuda`（§2.3.3） |
+**执行流程。** Host 扁平化场景并可选建树 → `cudaMalloc`/`cudaMemcpy` 上传 → `renderKernel` 写 float RGB → 回读 `Image` → `SaveBMP`。`main.cpp` 中 CUDA 成功则直接 return，不进入 OpenMP 循环。算法覆盖 NEE、MIS、GGX、色散等，与 CPU 一致。
 
 #### 2.13.3 实验分析与对比
 
@@ -989,8 +873,6 @@ $$
 
 #### 2.14.2 代码逻辑
 
-**涉及文件与职责**
-
 | 文件 | 函数/模块 | 作用 |
 |------|-----------|------|
 | `src/main.cpp` | `hash01` | 确定性哈希，SPP>1 时为子像素生成 $[0,1)$ 偏移 |
@@ -999,14 +881,8 @@ $$
 | `src/cuda_path_tracer.cu` | `hash01`、`generateCameraDir` | GPU 端相同 jitter 公式与累积逻辑 |
 | `src/main.cpp` | CLI | 第 4 参数 `spp`（整数 ≥1）控制超采样次数 |
 
-**行为说明。** Whitted 默认 SPP=1 无 jitter，边缘最锐也最锯齿；路径模式默认 64 SPP 已含 jitter，同时降低几何走样与 MC 噪声。CPU/GPU 使用相同 `hash01` 公式，RNG 发生器不同（LCG vs curand）。
+Whitted 默认 SPP=1 无 jitter，边缘最锐也最锯齿；路径模式默认 64 SPP 已含 jitter，同时降低几何走样与 MC 噪声。CPU/GPU 使用相同 `hash01` 公式，RNG 发生器不同（LCG vs curand）。
 
-**与作业要求的对应**
-
-| 实验 | 命令 |
-|------|------|
-| §2.14.3 无 AA | `./build/PA1-2 testcases/scene_whitted.txt output/report/aa_before.bmp whitted 1 cuda` |
-| SSAA | `./build/PA1-2 testcases/scene_whitted.txt output/report/aa_after.bmp whitted 16 cuda` |
 
 #### 2.14.3 实验分析与对比
 
@@ -1058,59 +934,8 @@ $$
 
 ### 2.15 综合展示
 
-将 **四项核心功能** 集中于单幅 Cornell Box 终稿（`testcases/scene_final_simple.txt`）：**MIS 路径追踪**、**Gamma 校正**、**纹理贴图**、**色散**（仅棱镜一处）。CPU `path_mis` 渲染以支持纹理与法线贴图；**不含** Ward / Fresnel 加分项，亦不含旧版 `scene_final_showcase.txt` 中的金兔 / 镜面 / 玻璃组合。
+#### 2.15.1 经典 Cornell 五球 + 立方体（`scene_classic_mis.txt`）
 
-> **说明**：旧终稿 `scene_final_showcase.txt`（`masterpiece.png`，CUDA 多物体）已弃用，保留文件仅供对照；本报告以 `final_simple.png` 为准。
-
-#### 2.15.1 场景构成
-
-| 物体 | 位置 | 材质 | 展示功能 |
-|------|------|------|----------|
-| 后墙 `cornell_back_wall.obj` | 盒体后方 | 灰泥 albedo + `plaster_normal.bmp`，Phong `shininess 40` | **纹理 + 法线贴图**（Panel C） |
-| 大理石球 | 中央偏左 | `marble_albedo.bmp` | 程序化 albedo 纹理 |
-| 色散棱镜 `prism.obj` | 中央偏右地面 | 折射 IOR 1.50，`dispersionDelta 0.10` | **色散**（本场景唯一色散物体） |
-| 红/绿墙 + 灰地面/后平面 | Cornell 盒 | 经典漫反射色 | 间接色溢与构图 |
-| 天花板面光 | 顶部小窗 | AreaLight + Emissive `65` | **NEE + MIS** 直接光采样 |
-
-> **曝光**：面光 `65`，无镜面/金属高光叠加，较旧版 masterpiece（面光 `35` 但含镜面组合）更易读且不易过曝。
-
-#### 2.15.2 渲染命令
-
-```bash
-cd code/build && cmake .. && make -j
-mkdir -p textures output/final results
-cd ..
-./build/gen_textures
-./build/PA1-2 testcases/scene_final_simple.txt output/final/final_simple.bmp \
-    path_mis 64 gamma omp dispersion
-python3 -c "from PIL import Image; Image.open('output/final/final_simple.bmp').save('output/final/final_simple.png')"
-cp output/final/final_simple.png results/final_simple.png
-```
-
-#### 2.15.3 终稿与功能对照
-
-![综合展示终稿](results/final_simple.png)
-
-*图 2.15：PA1-2 综合展示 — `path_mis` 64 SPP，`gamma` + `omp` + `dispersion`（CPU，纹理可用）。*
-
-画面中可辨认的对应关系：
-
-1. **后墙灰泥颗粒与凹凸** → 纹理映射 + 法线贴图（CPU 路径）
-2. **中央偏左大理石脉理** → 程序化 albedo 纹理
-3. **棱镜底部彩虹光斑** → 色散（RGB 分通道 IOR + CLI `dispersion`；全场景仅此物体）
-4. **天花板柔光、阴影与红/绿墙间接色** → `path_mis` 路径追踪 + 面光 NEE + MIS
-5. **整体 sRGB 色调与边缘平滑** → Gamma 校正 + 64 SPP 子像素抖动抗锯齿 + OpenMP 并行
-
-#### 2.15.4 经典 Cornell 五球 + 立方体（`scene_classic_mis.txt`）
-
-在 `scene_path.txt` 经典布局上仅改一处材质，用 `path_mis` 渲染：
-
-| 球体 | 坐标 (x,y,z) | 原材质 | 本场景 |
-|------|--------------|--------|--------|
-| 右下低球 | (0.60, 0.38, 0.40) | 完美镜面 | **金色 GGX 光泽** roughness 0.18 |
-| 其余 | — | 红/蓝/绿漫反射、右上镜面球、玻璃立方体 | 不变 |
-
-> 原场景「蓝球」在几何上位于相机**左上**（x<0），保持蓝色漫反射；右上高球仍为镜面。
 
 ```bash
 ./build/PA1-2 testcases/scene_classic_mis.txt output/final/classic_mis.bmp \
@@ -1136,7 +961,7 @@ cp output/final/dragon_showcase.png results/dragon_showcase.png
 
 ![三龙材质展台](results/dragon_showcase.png)
 
-*图 2.15c：三龙展台 — `path_mis` 64 SPP，`gamma` + `cuda` + `dispersion`（见 `testcases/scene_dragon_showcase.README.txt`）。*
+*图 2.15c：三龙展台 — `path_mis` 128 SPP，`gamma` + `cuda` + `dispersion`（左色散玻璃 / 中金 GGX / 右镜面；mesh 用 `dragon_8k.obj`）。*
 
 ---
 
@@ -1153,7 +978,7 @@ cp output/final/dragon_showcase.png results/dragon_showcase.png
 | BVH ON / OFF | §2.3.3 | 图 2.3a–b |
 | NEE vs 无 NEE | §2.7.3 | 图 2.7a–b |
 | BRDF / NEE / MIS 三模式 | §2.8.3 | 图 2.8a–c |
-| Whitted vs Path | §2.6.3 | 图 2.6a–b |
+| Whitted vs Path | §2.6.3 | 图 2.6a–b（Whitted vs `path_nee`，同点光） |
 | GGX 光泽 | §2.9.3 | 图 2.9a |
 | 色散 | §2.10.3 | 图 2.10a |
 | Gamma 开/关 | §2.11.3 | 图 2.11a–b |
@@ -1161,7 +986,6 @@ cp output/final/dragon_showcase.png results/dragon_showcase.png
 | CUDA vs CPU | §2.13.3 | `accel_cpu_bunny_whitted.png`、`accel_gpu_bunny_path64.png` |
 | 抗锯齿 SPP 1/16 | §2.14.3 | 图 2.14a–b |
 | **综合展示终稿** | §2.15.3 | 图 2.15 |
-| Fresnel / Ward（加分） | 附录 A / B | 附录图 A.1–A.3、B.1–B.2 |
 
 ---
 
@@ -1200,104 +1024,41 @@ cp output/final/dragon_showcase.png results/dragon_showcase.png
 | CUDA 显存 | 大场景或 curand 初始化可能 OOM，回退 CPU |
 | 默认线性输出 | 主结果未开 gamma 时为线性 radiance |
 
-### 3.3 参考文献
 
-- 清华大学 PA1 光线追踪框架（`code/`）
+### 3.3 参考借鉴
+
+- PA1 光线追踪框架
 - 课程讲义：BRDF 与 Cook-Torrance
 - 习题课：路径追踪、RR、NEE
 - GAMES101 Lecture 16（NEE 面积采样）
 
 ---
 
-## 附录 A：加分项 — 菲涅尔 Schlick 折射
-
-> 本附录单独记录 Fresnel bonus，正文功能列表未包含。
-
-### A.1 原理
-
-电介质折射界面按 Schlick 近似分配反射能量：
-
-$$F_r(\theta_i) = R_0 + (1 - R_0)(1 - \cos\theta_i)^5,\quad R_0=\left(\frac{n_1-n_2}{n_1+n_2}\right)^2$$
-
-- **Whitted**：解析加权 $L = F_r L_{\mathrm{refl}} + (1-F_r) L_{\mathrm{refr}}$
-- **路径追踪**：Russian Roulette 按 $F_r$ 选反射/折射，throughput 除以概率
-- **TIR**：Snell 无解时 $F_r=1$；材质可用 `noFresnel` 关闭
-
-### A.2 实验图
-
-![Fresnel 开/关对比（左 noFresnel，右 Fresnel ON）](results/fresnel_cornell_compare_labeled.png)
-
-*附录图 A.1：`scene_fresnel_cornell_compare.txt`。Cornell 盒 + AreaLight；相机 $(0,0.50,3.8)$ 与球心同高、沿 $-Z$ 看向后墙；两球 $(\pm0.55,0.50,0)$、$r=0.28$（间隙 0.54）、IOR 1.50、`refractColor` 白；左 `noFresnel` 球心透视后墙（center→后墙 L2≈0.02–0.05），右 Fresnel ON 侧缘红/绿墙反射更强。*
-
-![水球 + 玻璃球](results/fresnel_cornell_water_glass_labeled.png)
-
-*附录图 A.2：同相机布局；左水球 IOR 1.33、`refractColor (0.30,0.55,1.0)` $r=0.32$；右玻璃球 IOR 1.60 无色 $r=0.26$；均 Fresnel ON，球心可见后墙，水球蓝 tint、玻璃更清晰。*
-
-**透射调试场景**：`scene_fresnel_debug_transmit.txt` — 单球 $(0,0.50,0)$ $r=0.28$、`noFresnel`；相机 $(0,0.50,2.5)$ 与球心共轴。球心像素与后墙 L2 $<0.03$ 即确认折射出射路径正常；若双球对比场景仍只见侧墙色，优先检查相机高度是否与球心对齐、横向偏移是否过大（离轴折射会弯向红/绿侧墙而非后墙）。
-
-![掠射角 Fresnel：俯视 vs 贴地](results/fresnel_grazing_compare.png)
-
-*附录图 A.3：`scene_fresnel_grazing_topdown.txt` / `scene_fresnel_grazing_low.txt`。玻璃地板 IOR 1.50 + 红漫反射球；俯视见透明地板与下方红球；贴地掠射 $F\to 1$ 地板镜面映红球。*
-
-**场景参数摘要**
-
-| 实验 | 场景文件 | 要点 |
-|------|----------|------|
-| 开/关 | `scene_fresnel_cornell_compare.txt` | 相机 $(0,0.50,3.8)$；球 $(\pm0.55,0.50,0)$ $r=0.28$；左 `noFresnel` 右 Fresnel |
-| 水/玻璃 | `scene_fresnel_cornell_water_glass.txt` | 左 IOR 1.33 蓝 tint $r=0.32$，右 IOR 1.60 无色 $r=0.26$ |
-| 透射调试 | `scene_fresnel_debug_transmit.txt` | 单球共轴相机；验证 center→后墙 L2 |
-| 掠射 | `scene_fresnel_grazing_topdown.txt` / `_low.txt` | 地板 `RefractMaterial` IOR 1.5；红球 `(0,0.3,0)` $r=0.3$ |
-
-**关键文件**：`include/material.hpp`、`include/raytracer.hpp`、`src/cuda_path_tracer.cu`（`isSegmentOccluded` 折射面透射 NEE 阴影）、`src/cuda_scene_builder.cpp`（`fresnelEnabled` 上传）。
-
-复现：`bash scripts/fresnel_render.sh`；标注图与并排 `fresnel_grazing_compare.png`：`python3 scripts/fresnel_figures.py`。
-
----
-
-## 附录 B：加分项 — Ward 各向异性 BRDF
-
-> 本附录单独记录 Ward bonus，正文功能列表未包含。
-
-### B.1 原理
-
-Ward (1992) 各向异性微表面模型；$\alpha_x \neq \alpha_y$ 时高光沿切线 $T$ 方向拉伸为椭圆条纹。漫反射 Lambert + 能量守恒 $\rho_d'=\rho_d(1-\max\rho_s)$。
-
-**关键**：在 **球面** 上用 `buildConsistentBasis` 构建确定性切线场，再按场景 `tangent` 旋转，形成随曲率弯曲的拉丝金属高光（经典 brushed metal）。
-
-### B.2 实验图
-
-![三球金属 BRDF 对比（GGX / Ward 横条 / Ward 竖条）](results/ward_brdf_metal_compare.png)
-
-*附录图 B.1：`scene_brdf_metal_compare.txt`，512 SPP CUDA。暗室 + PointLight `(0,1.5,0)`；三球 $r=0.35$ 于 $x=-0.7,0,0.7$；左 Cook-Torrance GGX（$\mathrm{roughness}=0.1$），中 Ward $\alpha_x=0.2,\alpha_y=0.01$（水平条纹），右 Ward $\alpha_x=0.01,\alpha_y=0.2$（垂直条纹）；暗金属 $\rho_d=(0.01,0.01,0.01)$、$\rho_s=(1,1,1)$。*
-
-> 旧版竖直 Triangle 面板场景（`scene_ward_aniso_showcase.txt` 等）已弃用，请用 `scene_brdf_metal_compare.txt`。
-
-**关键文件**：`WardBRDF` / `WardMaterial`（`include/material.hpp`）、`shadeWardPath`（`include/raytracer.hpp`）、GPU `buildWardFrame` / `evalWardNEE`（`src/cuda_path_tracer.cu`）。
-
----
-
-## 附录 C：推荐运行命令
+## 附录：推荐运行命令
 
 ```bash
 cd code
 cmake --build build -j$(nproc)
 
-# —— Whitted / Path 对比（§2.6.3，点光源）——
+# —— Whitted / Path 对比（§2.6.3，点光源，Whitted vs path_nee）——
 mkdir -p output/report/whitted_path_compare
 ./build/PA1-2 testcases/scene_whitted_path_compare.txt output/report/whitted_path_compare/whitted.bmp whitted 1 gamma omp
-./build/PA1-2 testcases/scene_whitted_path_compare.txt output/report/whitted_path_compare/path.bmp path 64 gamma omp
-python3 -c "from PIL import Image; Image.open('output/report/whitted_path_compare/whitted.bmp').save('results/whitted_compare_whitted.png'); Image.open('output/report/whitted_path_compare/path.bmp').save('results/whitted_compare_path.png')"
+./build/PA1-2 testcases/scene_whitted_path_compare.txt output/report/whitted_path_compare/path_nee.bmp path_nee 128 gamma omp
+python3 -c "from PIL import Image; Image.open('output/report/whitted_path_compare/whitted.bmp').save('results/whitted_compare_whitted.png'); Image.open('output/report/whitted_path_compare/path_nee.bmp').save('results/whitted_compare_path.png')"
 
-# —— NEE 对比（§2.7.3，面光源 scene_path.txt）——
-./build/PA1-2 testcases/scene_path.txt output/report/path_no_nee_64.bmp path 64 gamma omp
-./build/PA1-2 testcases/scene_path.txt output/report/path_nee_64.bmp path_nee 64 gamma omp
-python3 -c "from PIL import Image; Image.open('output/report/path_no_nee_64.bmp').save('results/path_no_nee_64.png'); Image.open('output/report/path_nee_64.bmp').save('results/path_nee_cornell.png')"
+# —— NEE 对比（§2.7.3，面光源 scene_path.txt，256 SPP）——
+./build/PA1-2 testcases/scene_path.txt output/report/path_256.bmp path 256 gamma omp
+./build/PA1-2 testcases/scene_path.txt output/report/path_nee_256.bmp path_nee 256 gamma omp
+python3 -c "from PIL import Image; Image.open('output/report/path_256.bmp').save('results/path_256.png'); Image.open('output/report/path_nee_256.bmp').save('results/path_nee_256.png')"
 
 # —— Path Guiding 对比（§2.1.3）——
-mkdir -p output/guiding_compare
-./build/PA1-2 testcases/scene_guiding_occluder.txt results/mis_128.bmp path_mis 128 gamma cuda
-./build/PA1-2 testcases/scene_guiding_occluder.txt results/guiding_128.bmp path_guiding 128 gamma cuda train_spp 256
+mkdir -p output/guiding_compare results
+./build/PA1-2 testcases/scene_guiding_occluder.txt output/guiding_compare/mis_128.bmp path_mis 128 gamma cuda
+./build/PA1-2 testcases/scene_guiding_occluder.txt output/guiding_compare/guiding_128.bmp path_guiding 128 gamma cuda train_spp 256
+./build/PA1-2 testcases/scene_guiding_occluder.txt output/guiding_compare/mis_512.bmp path_mis 512 gamma cuda
+./build/PA1-2 testcases/scene_guiding_occluder.txt output/guiding_compare/guiding_512.bmp path_guiding 512 gamma cuda train_spp 1024
 python3 scripts/guiding_compare_figures.py
+cp output/guiding_compare/compare_128_side_by_side.png output/guiding_compare/compare_512_side_by_side.png output/guiding_compare/compare_128_zoom_4x.png results/
 
 # —— 纹理三面板（§2.2.3，CPU）——
 ./build/gen_textures
@@ -1306,8 +1067,8 @@ python3 scripts/guiding_compare_figures.py
 ./build/PA1-2 testcases/scene_texture_cornell_normal.txt output/texture_cornell_normal.bmp whitted 1 gamma
 
 # —— BVH Bunny（§2.3.3）——
-./build/PA1-2 testcases/scene_bvh_bunny.txt output/bvh_compare/bunny_gpu_bvh_on_path128.bmp path_nee 128 cuda
-./build/PA1-2 testcases/scene_bvh_bunny.txt output/bvh_compare/bunny_gpu_bvh_off_path128.bmp path_nee 128 cuda no_bvh
+./build/PA1-2 testcases/scene_bvh_bunny.txt output/bvh_compare/bunny_bvh_on.bmp path_nee 128 gamma cuda
+./build/PA1-2 testcases/scene_bvh_bunny.txt output/bvh_compare/bunny_bvh_off.bmp path_nee 128 gamma cuda no_bvh
 
 # —— 光泽 / 色散（§2.9、§2.10）——
 ./build/PA1-2 testcases/scene_glossy.txt output/glossy/glossy.bmp path_nee 64 gamma
@@ -1329,8 +1090,4 @@ mkdir -p textures output/final results
 ./build/PA1-2 testcases/scene_final_simple.txt output/final/final_simple.bmp path_mis 64 gamma omp dispersion
 python3 -c "from PIL import Image; Image.open('output/final/final_simple.bmp').save('output/final/final_simple.png')"
 cp output/final/final_simple.png results/final_simple.png
-
-# —— Fresnel / Ward（见附录，需 CUDA）——
-bash scripts/fresnel_render.sh
-./build/PA1-2 testcases/scene_brdf_metal_compare.txt output/ward/brdf_metal_compare.bmp path_nee 512 gamma cuda
 ```
