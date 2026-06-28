@@ -39,10 +39,8 @@ Materials {
     Material {
         diffuseColor 0.630 0.065 0.050
     }
-    RefractiveMaterial {
-        refractColor 1 1 1
-        refractIndex 1.50
-        dispersionDelta 0.10
+    Material {
+        diffuseColor 0.180 0.280 0.800
     }
     Material {
         diffuseColor 0.800 0.150 0.150

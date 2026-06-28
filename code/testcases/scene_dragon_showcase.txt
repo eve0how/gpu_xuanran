@@ -1,0 +1,160 @@
+
+PerspectiveCamera {
+    center 0 0.62 3.35
+    direction 0 -0.03 -1
+    up 0 1 0
+    angle 38
+    width 1024
+    height 1024
+}
+
+Lights {
+    numLights 2
+    AreaLight {
+        vertex0 -0.18 1.998 -0.18
+        vertex1 0.18 1.998 -0.18
+        vertex2 0.18 1.998 0.18
+        color 55 54 50
+    }
+    AreaLight {
+        vertex0 -0.18 1.998 -0.18
+        vertex1 0.18 1.998 0.18
+        vertex2 -0.18 1.998 0.18
+        color 55 54 50
+    }
+}
+
+Background {
+    color 0 0 0
+}
+
+Materials {
+    numMaterials 10
+    Material {
+        diffuseColor 0.38 0.37 0.35
+    }
+    Material {
+        diffuseColor 0.08 0.08 0.09
+    }
+    Material {
+        diffuseColor 0.52 0.09 0.07
+    }
+    Material {
+        diffuseColor 0.09 0.38 0.12
+    }
+    Material {
+        diffuseColor 0.32 0.32 0.34
+    }
+    Material {
+        diffuseColor 0.14 0.14 0.16
+    }
+    RefractiveMaterial {
+        refractColor 1 1 1
+        refractIndex 1.52
+        dispersionDelta 0.12
+    }
+    GlossyMaterial {
+        diffuseColor 0.04 0.03 0.02
+        specularColor 0.92 0.74 0.28
+        roughness 0.16
+        F0 0.92 0.74 0.28
+    }
+    ReflectiveMaterial {
+        reflectColor 1 1 1
+    }
+    EmissiveMaterial {
+        emission 55 54 50
+    }
+}
+
+Group {
+    numObjects 13
+    MaterialIndex 0
+    Plane {
+        normal 0 1 0
+        offset 0
+    }
+    MaterialIndex 1
+    Plane {
+        normal 0 -1 0
+        offset -2
+    }
+    MaterialIndex 2
+    Plane {
+        normal 1 0 0
+        offset -1
+    }
+    MaterialIndex 3
+    Plane {
+        normal -1 0 0
+        offset -1
+    }
+    MaterialIndex 4
+    Plane {
+        normal 0 0 1
+        offset -1
+    }
+    MaterialIndex 9
+    Triangle {
+        vertex0 -0.18 1.998 -0.18
+        vertex1 0.18 1.998 -0.18
+        vertex2 0.18 1.998 0.18
+    }
+    MaterialIndex 9
+    Triangle {
+        vertex0 -0.18 1.998 -0.18
+        vertex1 0.18 1.998 0.18
+        vertex2 -0.18 1.998 0.18
+    }
+    MaterialIndex 5
+    Transform {
+        Translate -0.58 -0.02 0.12
+        Scale 0.24 0.10 0.24
+        TriangleMesh {
+            obj_file mesh/cube.obj
+        }
+    }
+    MaterialIndex 5
+    Transform {
+        Translate 0 -0.02 0.0
+        Scale 0.28 0.10 0.28
+        TriangleMesh {
+            obj_file mesh/cube.obj
+        }
+    }
+    MaterialIndex 5
+    Transform {
+        Translate 0.58 -0.02 0.12
+        Scale 0.24 0.10 0.24
+        TriangleMesh {
+            obj_file mesh/cube.obj
+        }
+    }
+    MaterialIndex 6
+    Transform {
+        Translate -0.58 0.10 0.12
+        YRotate 28
+        UniformScale 0.30
+        TriangleMesh {
+            obj_file mesh/dragon.obj
+        }
+    }
+    MaterialIndex 7
+    Transform {
+        Translate 0 0.12 0.0
+        YRotate -12
+        UniformScale 0.34
+        TriangleMesh {
+            obj_file mesh/dragon.obj
+        }
+    }
+    MaterialIndex 8
+    Transform {
+        Translate 0.58 0.10 0.12
+        YRotate -32
+        UniformScale 0.30
+        TriangleMesh {
+            obj_file mesh/dragon.obj
+        }
+    }
+}

@@ -1,0 +1,14 @@
+=== classic_mis 15000 SPP start 2026-06-28T16:39:31+08:00 ===
+Argument 1 is: testcases/scene_classic_mis.txt
+Argument 2 is: output/final/classic_mis.bmp
+Argument 3 is: path_mis
+Argument 4 is: 15000
+Argument 5 is: gamma
+Argument 6 is: cuda
+Argument 7 is: dispersion
+Render mode: path_mis, SPP: 15000, gamma: on, omp: off, dispersion: on, cuda: on, bvh: on
+CUDA scene: materials=11 spheres=5 planes=5 triangles=14 bvhNodes=7 area=2 point=0 dir=0
+Render time: 1067.14 s (CUDA)
+Hello! Computer Graphics!
+classic_mis ELAPSED 1067.33
+=== classic_mis done 2026-06-28T16:57:19+08:00 ===

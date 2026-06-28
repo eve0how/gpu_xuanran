@@ -7,7 +7,7 @@ Based on scene_path.txt (5 spheres + 1 glass cube). Camera at (0,1,4.3), looks -
 Sphere layout (center xyz | original material | this scene)
 -------------------------------------------------------------
 Red diffuse      ( 0.05, 0.70, 0.05)  mat 4 diffuse red     — unchanged
-Blue diffuse     (-0.52, 1.12,-0.42)  mat 3 blue diffuse    — CHANGED → dispersive glass (mat 3, IOR 1.50, delta 0.10)
+Blue diffuse     (-0.52, 1.12,-0.42)  mat 3 blue diffuse    — unchanged (restored)
 Green diffuse    (-0.55, 0.42, 0.58)  mat 5 green diffuse   — unchanged
 Mirror top-R     ( 0.62, 1.15,-0.30)  mat 6 Reflective      — unchanged (perfect mirror)
 Mirror bottom-R  ( 0.60, 0.38, 0.40)  mat 6 Reflective      — CHANGED → gold GGX Glossy (mat 10)
@@ -19,10 +19,10 @@ Note: the original blue ball is geometrically top-LEFT (x<0), not top-right.
 Render (CUDA preferred; CPU fallback if GPU OOM):
   cd code && mkdir -p output/final results
   ./build/PA1-2 testcases/scene_classic_mis.txt output/final/classic_mis.bmp \
-      path_mis 128 gamma cuda dispersion
-  # CPU: path_mis 128 gamma omp dispersion
+      path_mis 15000 gamma cuda dispersion
+  # CPU: path_mis 15000 gamma omp dispersion
 
   python3 -c "from PIL import Image; Image.open('output/final/classic_mis.bmp').save('output/final/classic_mis.png')"
   cp output/final/classic_mis.png results/classic_mis.png
 
-Features: path_mis + gamma + dispersion (glass sphere only).
+Features: path_mis + gamma + dispersion (glass cube only; blue sphere is diffuse).

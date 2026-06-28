@@ -54,15 +54,20 @@ bvh_bunny_on.png
 bvh_bunny_off.png
   ./build/PA1-2 testcases/scene_bvh_bunny.txt output/bvh_compare/bunny_gpu_bvh_off_path128.bmp path_nee 128 cuda no_bvh
 
-§2.6 Whitted vs Path (scene_path.txt, 1024², CPU)
---------------------------------------------------
+§2.6 Whitted vs Path (scene_whitted_path_compare.txt, 1024², CPU)
+----------------------------------------------------------------
+PointLight at (0, 1.9, 0), color (2, 2, 2). Same geometry as scene_whitted.txt.
+See testcases/scene_whitted_path_compare.README.txt.
+
 whitted_compare_whitted.png
-  ./build/PA1-2 testcases/scene_path.txt output/report/whitted_path_compare/whitted.bmp whitted 1 gamma omp
+  ./build/PA1-2 testcases/scene_whitted_path_compare.txt \
+    output/report/whitted_path_compare/whitted.bmp whitted 1 gamma omp
 
 whitted_compare_path.png
-  ./build/PA1-2 testcases/scene_path.txt output/report/whitted_path_compare/path.bmp path 128 gamma omp
+  ./build/PA1-2 testcases/scene_whitted_path_compare.txt \
+    output/report/whitted_path_compare/path.bmp path 64 gamma omp
 
-§2.7 NEE (scene_path.txt, 1024², CPU, both 64 SPP)
+§2.7 NEE (scene_path.txt, 1024², CPU, both 64 SPP; area lights — separate from §2.6)
 ----------------------------------------------------
 path_no_nee_64.png
   ./build/PA1-2 testcases/scene_path.txt output/report/path_no_nee_64.bmp path 64 gamma omp
@@ -130,8 +135,11 @@ aa_before_zoom.png / aa_after_zoom.png  (640×640 each)
 final_simple.png  — scene_final_simple.txt, path_mis 64 gamma omp dispersion (CPU)
   ./build/PA1-2 testcases/scene_final_simple.txt output/final/final_simple.bmp path_mis 64 gamma omp dispersion
 
-classic_mis.png  — scene_classic_mis.txt, path_mis 128 gamma cuda dispersion
-  ./build/PA1-2 testcases/scene_classic_mis.txt output/final/classic_mis.bmp path_mis 128 gamma cuda dispersion
+classic_mis.png  — scene_classic_mis.txt, path_mis 15000 gamma cuda dispersion
+  ./build/PA1-2 testcases/scene_classic_mis.txt output/final/classic_mis.bmp path_mis 15000 gamma cuda dispersion
+
+dragon_showcase.png  — scene_dragon_showcase.txt, path_mis 64 gamma cuda dispersion
+  ./build/PA1-2 testcases/scene_dragon_showcase.txt output/final/dragon_showcase.bmp path_mis 64 gamma cuda dispersion
 
 Appendix A — Fresnel (1024² unless noted)
 ------------------------------------------

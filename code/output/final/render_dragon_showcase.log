@@ -1,0 +1,10 @@
+=== dragon_showcase 64 SPP GPU-only start 2026-06-28T16:59:09+08:00 ===
+Argument 1 is: testcases/scene_dragon_showcase.txt
+Argument 2 is: output/final/dragon_showcase.bmp
+Argument 3 is: path_mis
+Argument 4 is: 64
+Argument 5 is: gamma
+Argument 6 is: cuda
+Argument 7 is: dispersion
+Render mode: path_mis, SPP: 64, gamma: on, omp: off, dispersion: on, cuda: on, bvh: on
+CUDA scene: materials=10 spheres=0 planes=5 triangles=2613956 bvhNodes=2082183 area=2 point=0 dir=0
