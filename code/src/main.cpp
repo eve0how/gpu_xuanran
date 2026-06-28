@@ -75,6 +75,10 @@ static bool parseCudaFlag(int argc, char *argv[]) {
            parseFlag(argc, argv, "gpu", "--gpu");
 }
 
+static bool parseNoBvhFlag(int argc, char *argv[]) {
+    return parseFlag(argc, argv, "no_bvh", "--no-bvh");
+}
+
 static int parseTrainSppFlag(int argc, char *argv[]) {
     for (int i = 3; i < argc; ++i) {
         if (strcmp(argv[i], "train_spp") == 0 || strcmp(argv[i], "--train-spp") == 0) {
@@ -94,7 +98,8 @@ static bool isOptionToken(const char *arg) {
            strcmp(arg, "dispersion") == 0 || strcmp(arg, "--dispersion") == 0 ||
            strcmp(arg, "cuda") == 0 || strcmp(arg, "--cuda") == 0 ||
            strcmp(arg, "gpu") == 0 || strcmp(arg, "--gpu") == 0 ||
-           strcmp(arg, "train_spp") == 0 || strcmp(arg, "--train-spp") == 0;
+           strcmp(arg, "train_spp") == 0 || strcmp(arg, "--train-spp") == 0 ||
+           strcmp(arg, "no_bvh") == 0 || strcmp(arg, "--no-bvh") == 0;
 }
 
 static const char *modeName(RenderMode mode) {
@@ -119,7 +124,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (argc < 3) {
-        cout << "Usage: ./PA1-2 <scene file> <output bmp> [whitted|path|path_nee|path_mis|path_guiding] [spp] [gamma] [omp|parallel] [dispersion] [cuda|gpu] [train_spp N]" << endl;
+        cout << "Usage: ./PA1-2 <scene file> <output bmp> [whitted|path|path_nee|path_mis|path_guiding] [spp] [gamma] [omp|parallel] [dispersion] [cuda|gpu] [no_bvh] [train_spp N]" << endl;
         return 1;
     }
 
@@ -135,6 +140,7 @@ int main(int argc, char *argv[]) {
     bool useOmp = parseOmpFlag(argc, argv);
     bool useDispersion = parseDispersionFlag(argc, argv);
     bool useCuda = parseCudaFlag(argc, argv);
+    bool noBvh = parseNoBvhFlag(argc, argv);
     int trainSpp = parseTrainSppFlag(argc, argv);
     if (argc >= 5 && !isOptionToken(argv[4])) {
         spp = atoi(argv[4]);
@@ -154,7 +160,8 @@ int main(int argc, char *argv[]) {
          << ", gamma: " << (applyGamma ? "on" : "off")
          << ", omp: " << (useOmp ? "on" : "off")
          << ", dispersion: " << (useDispersion ? "on" : "off")
-         << ", cuda: " << (useCuda ? "on" : "off");
+         << ", cuda: " << (useCuda ? "on" : "off")
+         << ", bvh: " << (noBvh ? "off" : "on");
     if (mode == RenderMode::PATH_TRACE_GUIDING && trainSpp > 0) {
         cout << ", train_spp: " << trainSpp;
     }
@@ -179,7 +186,7 @@ int main(int argc, char *argv[]) {
             cout << "Path guiding requires CUDA; training+render on GPU." << endl;
         }
         double cudaSec = 0.0;
-        if (renderWithCuda(scene, dImg, mode, spp, useDispersion, cudaSec, trainSpp)) {
+        if (renderWithCuda(scene, dImg, mode, spp, useDispersion, cudaSec, trainSpp, !noBvh)) {
             cout << "Render time: " << cudaSec << " s (CUDA)" << endl;
             dImg.SaveBMP(outputFile.c_str(), applyGamma);
             cout << "Hello! Computer Graphics!" << endl;

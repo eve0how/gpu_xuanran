@@ -259,6 +259,9 @@ void SceneParser::parseMaterials() {
         } else if (!strcmp(token, "GlossyMaterial") ||
                    !strcmp(token, "CookTorranceMaterial")) {
             materials[count] = parseGlossyMaterial();
+        } else if (!strcmp(token, "WardMaterial") ||
+                   !strcmp(token, "AnisotropicWardMaterial")) {
+            materials[count] = parseWardMaterial();
         } else {
             printf("Unknown token in parseMaterial: '%s'\n", token);
             exit(0);
@@ -334,7 +337,8 @@ Material *SceneParser::parseRefractMaterial() {
     char token[MAX_PARSER_TOKEN_LENGTH];
     Vector3f refractColor(1, 1, 1);
     float refractIndex = 1.5f;
-    float dispersionDelta = 0.02f;
+    float dispersionDelta = 0.0f;
+    bool fresnelEnabled = true;
     getToken(token);
     assert(!strcmp(token, "{"));
     while (true) {
@@ -345,12 +349,16 @@ Material *SceneParser::parseRefractMaterial() {
             refractIndex = readFloat();
         } else if (strcmp(token, "dispersionDelta") == 0) {
             dispersionDelta = readFloat();
+        } else if (strcmp(token, "fresnel") == 0) {
+            fresnelEnabled = readInt() != 0;
+        } else if (strcmp(token, "noFresnel") == 0) {
+            fresnelEnabled = false;
         } else {
             assert(!strcmp(token, "}"));
             break;
         }
     }
-    return new RefractMaterial(refractColor, refractIndex, dispersionDelta);
+    return new RefractMaterial(refractColor, refractIndex, dispersionDelta, fresnelEnabled);
 }
 
 Material *SceneParser::parseEmissiveMaterial() {
@@ -402,6 +410,56 @@ Material *SceneParser::parseGlossyMaterial() {
         }
     }
     auto *answer = new GlossyMaterial(diffuseColor, specularColor, roughness, f0);
+    if (filename[0] != '\0') {
+        Texture *tex = Texture::loadBMP(filename);
+        if (tex != nullptr) {
+            answer->setTexture(tex);
+        }
+    }
+    if (normalFilename[0] != '\0') {
+        Texture *nmap = Texture::loadBMP(normalFilename);
+        if (nmap != nullptr) {
+            answer->setNormalMap(nmap);
+        }
+    }
+    return answer;
+}
+
+Material *SceneParser::parseWardMaterial() {
+    char token[MAX_PARSER_TOKEN_LENGTH];
+    Vector3f diffuseColor(0.15f, 0.15f, 0.15f);
+    Vector3f specularColor(0.8f, 0.8f, 0.8f);
+    Vector3f tangent(1.0f, 0.0f, 0.0f);
+    float alphaX = 0.2f;
+    float alphaY = 0.2f;
+    char filename[MAX_PARSER_TOKEN_LENGTH];
+    char normalFilename[MAX_PARSER_TOKEN_LENGTH];
+    filename[0] = '\0';
+    normalFilename[0] = '\0';
+    getToken(token);
+    assert(!strcmp(token, "{"));
+    while (true) {
+        getToken(token);
+        if (strcmp(token, "diffuseColor") == 0 || strcmp(token, "baseColor") == 0) {
+            diffuseColor = readVector3f();
+        } else if (strcmp(token, "specularColor") == 0) {
+            specularColor = readVector3f();
+        } else if (strcmp(token, "alphaX") == 0) {
+            alphaX = readFloat();
+        } else if (strcmp(token, "alphaY") == 0) {
+            alphaY = readFloat();
+        } else if (strcmp(token, "tangent") == 0) {
+            tangent = readVector3f();
+        } else if (strcmp(token, "texture") == 0) {
+            getToken(filename);
+        } else if (strcmp(token, "normalMap") == 0) {
+            getToken(normalFilename);
+        } else {
+            assert(!strcmp(token, "}"));
+            break;
+        }
+    }
+    auto *answer = new WardMaterial(diffuseColor, specularColor, alphaX, alphaY, tangent);
     if (filename[0] != '\0') {
         Texture *tex = Texture::loadBMP(filename);
         if (tex != nullptr) {

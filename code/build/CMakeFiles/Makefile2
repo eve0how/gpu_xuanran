@@ -100,12 +100,12 @@ deps/vecmath/clean: deps/vecmath/CMakeFiles/vecmath.dir/clean
 CMakeFiles/PA1-2.dir/all: deps/vecmath/CMakeFiles/vecmath.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/PA1-2.dir/build.make CMakeFiles/PA1-2.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/PA1-2.dir/build.make CMakeFiles/PA1-2.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/data/PA1-2/code/build/CMakeFiles --progress-num=1,2,3,4,5,6,7,8,9 "Built target PA1-2"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/data/PA1-2/code/build/CMakeFiles --progress-num=1,2,3,4,5,6,7,8,9,10 "Built target PA1-2"
 .PHONY : CMakeFiles/PA1-2.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/PA1-2.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /data/PA1-2/code/build/CMakeFiles 17
+	$(CMAKE_COMMAND) -E cmake_progress_start /data/PA1-2/code/build/CMakeFiles 18
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/PA1-2.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /data/PA1-2/code/build/CMakeFiles 0
 .PHONY : CMakeFiles/PA1-2.dir/rule
@@ -126,7 +126,7 @@ CMakeFiles/PA1-2.dir/clean:
 CMakeFiles/gen_textures.dir/all: deps/vecmath/CMakeFiles/vecmath.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/gen_textures.dir/build.make CMakeFiles/gen_textures.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/gen_textures.dir/build.make CMakeFiles/gen_textures.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/data/PA1-2/code/build/CMakeFiles --progress-num=10,11,12 "Built target gen_textures"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/data/PA1-2/code/build/CMakeFiles --progress-num=11,12,13 "Built target gen_textures"
 .PHONY : CMakeFiles/gen_textures.dir/all
 
 # Build rule for subdir invocation for target.
@@ -152,7 +152,7 @@ CMakeFiles/gen_textures.dir/clean:
 deps/vecmath/CMakeFiles/vecmath.dir/all:
 	$(MAKE) $(MAKESILENT) -f deps/vecmath/CMakeFiles/vecmath.dir/build.make deps/vecmath/CMakeFiles/vecmath.dir/depend
 	$(MAKE) $(MAKESILENT) -f deps/vecmath/CMakeFiles/vecmath.dir/build.make deps/vecmath/CMakeFiles/vecmath.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/data/PA1-2/code/build/CMakeFiles --progress-num=13,14,15,16,17,18,19,20 "Built target vecmath"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/data/PA1-2/code/build/CMakeFiles --progress-num=14,15,16,17,18,19,20,21 "Built target vecmath"
 .PHONY : deps/vecmath/CMakeFiles/vecmath.dir/all
 
 # Build rule for subdir invocation for target.

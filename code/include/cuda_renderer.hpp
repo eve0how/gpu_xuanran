@@ -7,8 +7,10 @@
 
 bool cudaAvailable();
 
+void setGpuSceneBuildUseBVH(bool use);
+
 bool renderWithCuda(const SceneParser &scene, Image &image, RenderMode mode, int spp,
-                    bool dispersion, double &renderSec, int trainSpp = 0);
+                    bool dispersion, double &renderSec, int trainSpp = 0, bool useBvh = true);
 
 void freeCudaSceneCache();
 

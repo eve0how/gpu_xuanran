@@ -59,6 +59,15 @@ public:
         float u = 0.5f + atan2f(p.z(), p.x()) / (2.0f * static_cast<float>(M_PI));
         float v = 0.5f - asinf(std::max(-1.0f, std::min(1.0f, p.y() / radius))) / static_cast<float>(M_PI);
         h.setUV(Vector2f(u, v));
+        float phi = atan2f(p.z(), p.x());
+        Vector3f T(-sinf(phi), 0.0f, cosf(phi));
+        if (T.squaredLength() < 1e-8f) {
+            T = Vector3f(1.0f, 0.0f, 0.0f);
+        } else {
+            T.normalize();
+        }
+        Vector3f B = Vector3f::cross(normal, T).normalized();
+        h.setTBN(T, B);
         return true;
     }
 

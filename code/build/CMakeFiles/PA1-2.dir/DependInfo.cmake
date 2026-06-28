@@ -9,6 +9,7 @@ set(CMAKE_DEPENDS_LANGUAGES
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/data/PA1-2/code/src/cuda_path_tracer.cu" "CMakeFiles/PA1-2.dir/src/cuda_path_tracer.cu.o" "gcc" "CMakeFiles/PA1-2.dir/src/cuda_path_tracer.cu.o.d"
+  "/data/PA1-2/code/src/bvh_builder.cpp" "CMakeFiles/PA1-2.dir/src/bvh_builder.cpp.o" "gcc" "CMakeFiles/PA1-2.dir/src/bvh_builder.cpp.o.d"
   "/data/PA1-2/code/src/cuda_scene_builder.cpp" "CMakeFiles/PA1-2.dir/src/cuda_scene_builder.cpp.o" "gcc" "CMakeFiles/PA1-2.dir/src/cuda_scene_builder.cpp.o.d"
   "/data/PA1-2/code/src/image.cpp" "CMakeFiles/PA1-2.dir/src/image.cpp.o" "gcc" "CMakeFiles/PA1-2.dir/src/image.cpp.o.d"
   "/data/PA1-2/code/src/main.cpp" "CMakeFiles/PA1-2.dir/src/main.cpp.o" "gcc" "CMakeFiles/PA1-2.dir/src/main.cpp.o.d"

@@ -155,6 +155,30 @@ vecmath/fast:
 	$(MAKE) $(MAKESILENT) -f deps/vecmath/CMakeFiles/vecmath.dir/build.make deps/vecmath/CMakeFiles/vecmath.dir/build
 .PHONY : vecmath/fast
 
+src/bvh_builder.o: src/bvh_builder.cpp.o
+.PHONY : src/bvh_builder.o
+
+# target to build an object file
+src/bvh_builder.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/PA1-2.dir/build.make CMakeFiles/PA1-2.dir/src/bvh_builder.cpp.o
+.PHONY : src/bvh_builder.cpp.o
+
+src/bvh_builder.i: src/bvh_builder.cpp.i
+.PHONY : src/bvh_builder.i
+
+# target to preprocess a source file
+src/bvh_builder.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/PA1-2.dir/build.make CMakeFiles/PA1-2.dir/src/bvh_builder.cpp.i
+.PHONY : src/bvh_builder.cpp.i
+
+src/bvh_builder.s: src/bvh_builder.cpp.s
+.PHONY : src/bvh_builder.s
+
+# target to generate assembly for a file
+src/bvh_builder.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/PA1-2.dir/build.make CMakeFiles/PA1-2.dir/src/bvh_builder.cpp.s
+.PHONY : src/bvh_builder.cpp.s
+
 src/cuda_path_tracer.o: src/cuda_path_tracer.cu.o
 .PHONY : src/cuda_path_tracer.o
 
@@ -361,6 +385,9 @@ help:
 	@echo "... PA1-2"
 	@echo "... gen_textures"
 	@echo "... vecmath"
+	@echo "... src/bvh_builder.o"
+	@echo "... src/bvh_builder.i"
+	@echo "... src/bvh_builder.s"
 	@echo "... src/cuda_path_tracer.o"
 	@echo "... src/cuda_path_tracer.i"
 	@echo "... src/cuda_path_tracer.s"

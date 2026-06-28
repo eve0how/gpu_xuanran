@@ -8,7 +8,8 @@ enum GpuMatType : int {
     GPU_MAT_REFLECT = 1,
     GPU_MAT_REFRACT = 2,
     GPU_MAT_EMISSIVE = 3,
-    GPU_MAT_GLOSSY = 4
+    GPU_MAT_GLOSSY = 4,
+    GPU_MAT_WARD = 5
 };
 
 enum GpuRenderMode : int {
@@ -50,6 +51,10 @@ struct GpuMaterial {
     float f0[3];
     float dispersionDelta;
     float shininess;
+    int fresnelEnabled;
+    float alphaX;
+    float alphaY;
+    float tangent[3];
 };
 
 struct GpuSphere {
@@ -69,6 +74,21 @@ struct GpuTriangle {
     float v1[3];
     float v2[3];
     int matId;
+};
+
+struct AABB {
+    float bmin[3];
+    float bmax[3];
+};
+
+// 32-byte aligned BVH node: leaf uses leftChild as first triangle offset in bvhTriangles.
+struct alignas(32) GpuBVHNode {
+    float bboxMin[3];
+    float bboxMax[3];
+    int leftChild;
+    int rightChild;
+    int primitiveCount;
+    int _pad;
 };
 
 struct GpuAreaLight {
@@ -106,6 +126,11 @@ struct GpuSceneHost {
     int numPlanes = 0;
     GpuTriangle *triangles = nullptr;
     int numTriangles = 0;
+    GpuBVHNode *bvhNodes = nullptr;
+    int numBVHNodes = 0;
+    GpuTriangle *bvhTriangles = nullptr;
+    int numBVHTriangles = 0;
+    int bvhRootIndex = 0;
     GpuAreaLight *areaLights = nullptr;
     int numAreaLights = 0;
     GpuPointLight *pointLights = nullptr;

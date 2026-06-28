@@ -1,5 +1,13 @@
 #include "cuda_types.h"
+#include "bvh_builder.hpp"
 #include "scene_parser.hpp"
+
+namespace {
+bool g_gpuSceneBuildUseBVH = true;
+}
+
+void setGpuSceneBuildUseBVH(bool use) { g_gpuSceneBuildUseBVH = use; }
+
 #include "group.hpp"
 #include "sphere.hpp"
 #include "plane.hpp"
@@ -145,6 +153,12 @@ private:
             g.f0[0] = g.f0[1] = g.f0[2] = 0.04f;
             g.dispersionDelta = 0.0f;
             g.shininess = 0.0f;
+            g.fresnelEnabled = 1;
+            g.alphaX = 0.2f;
+            g.alphaY = 0.2f;
+            g.tangent[0] = 1.0f;
+            g.tangent[1] = 0.0f;
+            g.tangent[2] = 0.0f;
             toGpuVec3(mat->getSpecularColor(), g.specular);
             g.shininess = mat->getShininess();
 
@@ -159,6 +173,7 @@ private:
                     toGpuVec3(rm->getRefractColor(), g.specular);
                     g.ior = rm->getRefractIndex();
                     g.dispersionDelta = rm->getDispersionDelta();
+                    g.fresnelEnabled = rm->isFresnelEnabled() ? 1 : 0;
                     break;
                 }
                 case MaterialType::EMISSIVE:
@@ -169,6 +184,14 @@ private:
                     toGpuVec3(gm->getSpecularColor(), g.specular);
                     g.roughness = gm->getRoughness();
                     toGpuVec3(gm->getF0(), g.f0);
+                    break;
+                }
+                case MaterialType::WARD: {
+                    auto *wm = static_cast<WardMaterial *>(mat);
+                    toGpuVec3(wm->getSpecularColor(), g.specular);
+                    g.alphaX = wm->getAlphaX();
+                    g.alphaY = wm->getAlphaY();
+                    toGpuVec3(wm->getTangentDirection(), g.tangent);
                     break;
                 }
                 default:
@@ -305,6 +328,8 @@ GpuSceneHost buildGpuSceneHost(const SceneParser &scene) {
     static std::vector<GpuSphere> spheres;
     static std::vector<GpuPlane> planes;
     static std::vector<GpuTriangle> triangles;
+    static std::vector<GpuBVHNode> bvhNodes;
+    static std::vector<GpuTriangle> bvhTriangles;
     static std::vector<GpuAreaLight> areaLights;
     static std::vector<GpuPointLight> pointLights;
     static std::vector<GpuDirectionalLight> directionalLights;
@@ -315,6 +340,13 @@ GpuSceneHost buildGpuSceneHost(const SceneParser &scene) {
     flattener.flattenInto(materials, spheres, planes, triangles, areaLights, pointLights,
                           directionalLights, camera, host.bboxMin, host.bboxMax, host.hasBbox);
 
+    if (!triangles.empty() && g_gpuSceneBuildUseBVH) {
+        buildBVH(triangles, bvhNodes, bvhTriangles);
+    } else {
+        bvhNodes.clear();
+        bvhTriangles.clear();
+    }
+
     host.numMaterials = static_cast<int>(materials.size());
     host.materials = materials.empty() ? nullptr : materials.data();
     host.numSpheres = static_cast<int>(spheres.size());
@@ -323,6 +355,11 @@ GpuSceneHost buildGpuSceneHost(const SceneParser &scene) {
     host.planes = planes.empty() ? nullptr : planes.data();
     host.numTriangles = static_cast<int>(triangles.size());
     host.triangles = triangles.empty() ? nullptr : triangles.data();
+    host.numBVHNodes = static_cast<int>(bvhNodes.size());
+    host.bvhNodes = bvhNodes.empty() ? nullptr : bvhNodes.data();
+    host.numBVHTriangles = static_cast<int>(bvhTriangles.size());
+    host.bvhTriangles = bvhTriangles.empty() ? nullptr : bvhTriangles.data();
+    host.bvhRootIndex = host.numBVHNodes > 0 ? 0 : -1;
     host.numAreaLights = static_cast<int>(areaLights.size());
     host.areaLights = areaLights.empty() ? nullptr : areaLights.data();
     host.numPointLights = static_cast<int>(pointLights.size());

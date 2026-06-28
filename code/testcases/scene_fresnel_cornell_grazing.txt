@@ -1,0 +1,98 @@
+
+PerspectiveCamera {
+    center 0 0.18 2.4
+    direction 0 0.42 -2.4
+    up 0 1 0
+    angle 42
+    width 1024
+    height 1024
+}
+
+Lights {
+    numLights 2
+    AreaLight {
+        vertex0 -0.20 1.998 -0.20
+        vertex1 0.20 1.998 -0.20
+        vertex2 0.20 1.998 0.20
+        color 80 80 80
+    }
+    AreaLight {
+        vertex0 -0.20 1.998 -0.20
+        vertex1 0.20 1.998 0.20
+        vertex2 -0.20 1.998 0.20
+        color 80 80 80
+    }
+}
+
+Background {
+    color 0 0 0
+}
+
+Materials {
+    numMaterials 7
+    Material {
+        diffuseColor 0.725 0.725 0.725
+    }
+    Material {
+        diffuseColor 0.10 0.10 0.10
+    }
+    Material {
+        diffuseColor 0.630 0.065 0.050
+    }
+    Material {
+        diffuseColor 0.150 0.680 0.200
+    }
+    Material {
+        diffuseColor 0.12 0.12 0.14
+    }
+    RefractiveMaterial {
+        refractColor 1 1 1
+        refractIndex 1.50
+        dispersionDelta 0
+        noFresnel
+    }
+    RefractiveMaterial {
+        refractColor 1 1 1
+        refractIndex 1.50
+        dispersionDelta 0
+    }
+}
+
+Group {
+    numObjects 7
+    MaterialIndex 0
+    Plane {
+        normal 0 1 0
+        offset 0
+    }
+    MaterialIndex 1
+    Plane {
+        normal 0 -1 0
+        offset -2
+    }
+    MaterialIndex 2
+    Plane {
+        normal 1 0 0
+        offset -1
+    }
+    MaterialIndex 3
+    Plane {
+        normal -1 0 0
+        offset -1
+    }
+    MaterialIndex 4
+    Plane {
+        normal 0 0 1
+        offset -1
+    }
+    MaterialIndex 5
+    Sphere {
+        center -0.55 0.58 0.0
+        radius 0.55
+    }
+    MaterialIndex 6
+    Sphere {
+        center 0.55 0.58 0.0
+        radius 0.55
+    }
+}

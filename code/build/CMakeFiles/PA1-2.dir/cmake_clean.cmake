@@ -1,5 +1,7 @@
 file(REMOVE_RECURSE
   "CMakeFiles/PA1-2.dir/cmake_device_link.o"
+  "CMakeFiles/PA1-2.dir/src/bvh_builder.cpp.o"
+  "CMakeFiles/PA1-2.dir/src/bvh_builder.cpp.o.d"
   "CMakeFiles/PA1-2.dir/src/cuda_path_tracer.cu.o"
   "CMakeFiles/PA1-2.dir/src/cuda_path_tracer.cu.o.d"
   "CMakeFiles/PA1-2.dir/src/cuda_scene_builder.cpp.o"
