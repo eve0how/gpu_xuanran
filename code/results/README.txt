@@ -14,6 +14,7 @@ Convert BMP → PNG:
   python3 -c "from PIL import Image; Image.open('PATH.bmp').save('results/NAME.png')"
 
 Full appendix: see REPORT.md §附录 (run from code/ after cmake --build build).
+Reproduction policy: use **cuda** everywhere except §2.12 OpenMP timing, §2.13 CPU vs GPU timing, §2.2 textures (CPU only).
 
 §2.1 Path Guiding (scene_guiding_occluder.txt, 1024², CUDA)
 ------------------------------------------------------------
@@ -49,22 +50,22 @@ bvh_bunny_off.png
   ./build/PA1-2 testcases/scene_bvh_bunny.txt output/bvh_compare/bunny_bvh_off.bmp path_nee 128 gamma cuda no_bvh
   python3 -c "from PIL import Image; Image.open('output/bvh_compare/bunny_bvh_on.bmp').save('results/bvh_bunny_on.png'); Image.open('output/bvh_compare/bunny_bvh_off.bmp').save('results/bvh_bunny_off.png')"
 
-§2.6 Whitted vs path_nee (scene_whitted_path_compare.txt, 1024², CPU)
+§2.6 Whitted vs path_nee (scene_whitted_path_compare.txt, 1024², CUDA)
 ----------------------------------------------------------------------
 whitted_compare_whitted.png
 whitted_compare_path.png
   mkdir -p output/report/whitted_path_compare results
-  ./build/PA1-2 testcases/scene_whitted_path_compare.txt output/report/whitted_path_compare/whitted.bmp whitted 1 gamma omp
-  ./build/PA1-2 testcases/scene_whitted_path_compare.txt output/report/whitted_path_compare/path_nee.bmp path_nee 128 gamma omp
+  ./build/PA1-2 testcases/scene_whitted_path_compare.txt output/report/whitted_path_compare/whitted.bmp whitted 1 gamma cuda
+  ./build/PA1-2 testcases/scene_whitted_path_compare.txt output/report/whitted_path_compare/path_nee.bmp path_nee 128 gamma cuda
   python3 -c "from PIL import Image; Image.open('output/report/whitted_path_compare/whitted.bmp').save('results/whitted_compare_whitted.png'); Image.open('output/report/whitted_path_compare/path_nee.bmp').save('results/whitted_compare_path.png')"
 
-§2.7 NEE (scene_path.txt, 1024², CPU, 256 SPP)
------------------------------------------------
+§2.7 NEE (scene_path.txt, 1024², CUDA, 256 SPP)
+------------------------------------------------
 path_256.png
 path_nee_256.png
   mkdir -p output/report results
-  ./build/PA1-2 testcases/scene_path.txt output/report/path_256.bmp path 256 gamma omp
-  ./build/PA1-2 testcases/scene_path.txt output/report/path_nee_256.bmp path_nee 256 gamma omp
+  ./build/PA1-2 testcases/scene_path.txt output/report/path_256.bmp path 256 gamma cuda
+  ./build/PA1-2 testcases/scene_path.txt output/report/path_nee_256.bmp path_nee 256 gamma cuda
   python3 -c "from PIL import Image; Image.open('output/report/path_256.bmp').save('results/path_256.png'); Image.open('output/report/path_nee_256.bmp').save('results/path_nee_256.png')"
 
 §2.8 MIS three-way (scene_mis_demo.txt, 1024², 32 SPP, CUDA)
@@ -78,28 +79,28 @@ mis_compare_mis_32.png   — path_mis
   ./build/PA1-2 testcases/scene_mis_demo.txt output/report/mis_compare/mis_32.bmp path_mis 32 gamma cuda
   python3 -c "from PIL import Image; Image.open('output/report/mis_compare/brdf_32.bmp').save('results/mis_compare_brdf_32.png'); Image.open('output/report/mis_compare/nee_32.bmp').save('results/mis_compare_nee_32.png'); Image.open('output/report/mis_compare/mis_32.bmp').save('results/mis_compare_mis_32.png')"
 
-§2.9 GGX Glossy (scene_glossy.txt, 1024²)
--------------------------------------------
+§2.9 GGX Glossy (scene_glossy.txt, 1024², CUDA)
+-----------------------------------------------
 glossy.png
   mkdir -p output/glossy results
-  ./build/PA1-2 testcases/scene_glossy.txt output/glossy/glossy.bmp path_nee 64 gamma
+  ./build/PA1-2 testcases/scene_glossy.txt output/glossy/glossy.bmp path_nee 64 gamma cuda
   python3 -c "from PIL import Image; Image.open('output/glossy/glossy.bmp').save('results/glossy.png')"
 
-§2.10 Dispersion (scene_dispersion.txt, 1024²)
------------------------------------------------
+§2.10 Dispersion (scene_dispersion.txt, 1024², CUDA)
+----------------------------------------------------
 dispersion_before.png / dispersion_after.png
   mkdir -p output/diag results
-  ./build/PA1-2 testcases/scene_dispersion.txt output/diag/dispersion_before.bmp path_nee 128 gamma
-  ./build/PA1-2 testcases/scene_dispersion.txt output/diag/dispersion_after.bmp path_nee 128 gamma dispersion
+  ./build/PA1-2 testcases/scene_dispersion.txt output/diag/dispersion_before.bmp path_nee 128 gamma cuda
+  ./build/PA1-2 testcases/scene_dispersion.txt output/diag/dispersion_after.bmp path_nee 128 gamma dispersion cuda
   python3 -c "from PIL import Image; Image.open('output/diag/dispersion_before.bmp').save('results/dispersion_before.png'); Image.open('output/diag/dispersion_after.bmp').save('results/dispersion_after.png')"
 
-§2.11 Gamma (scene_path.txt path_nee 512, 1024², CPU)
-------------------------------------------------------
+§2.11 Gamma (scene_path.txt path_nee 512, 1024², CUDA)
+-------------------------------------------------------
 path_nee_nogamma512.png
-  ./build/PA1-2 testcases/scene_path.txt output/report/path_nee_nogamma512.bmp path_nee 512 omp
+  ./build/PA1-2 testcases/scene_path.txt output/report/path_nee_nogamma512.bmp path_nee 512 cuda
 
 path_nee_512.png
-  ./build/PA1-2 testcases/scene_path.txt output/report/path_nee_512.bmp path_nee 512 gamma omp
+  ./build/PA1-2 testcases/scene_path.txt output/report/path_nee_512.bmp path_nee 512 gamma cuda
 
   python3 -c "from PIL import Image; Image.open('output/report/path_nee_nogamma512.bmp').save('results/path_nee_nogamma512.png'); Image.open('output/report/path_nee_512.bmp').save('results/path_nee_512.png')"
 
